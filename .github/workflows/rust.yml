@@ -1,0 +1,41 @@
+name: Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  style-check:
+    name: Check Rust style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt -- --check
+
+  stable-test:
+    name: Run tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ["macos-14", "macos-15", "ubuntu-24.04-arm", "ubuntu-latest"]
+        toolchain: ["stable", "nightly"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - run: >
+          cargo +${{ matrix.toolchain }} test
+          --release
+          --verbose
+          --workspace
+          --no-fail-fast

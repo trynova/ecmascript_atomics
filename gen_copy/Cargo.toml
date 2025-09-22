@@ -1,0 +1,12 @@
+[package]
+name = "ecmascript_atomics_gen_copy"
+version = "0.1.0"
+repository = "https://github.com/trynova/nova/tree/main/ecmascript_atomics/gen_copy"
+description = "Procedural macro for generating racy atomic memcpy inline assembly."
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "lib.rs"
+proc-macro = true

@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["ecmascript_atomics", "gen_copy"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MPL-2.0"
+repository = "https://github.com/trynova/ecmascript_atomics/"
+readme = "README.md"
+keywords = ["ecmascript", "java", "atomics"]
+categories = ["concurrency"]
+authors = ["Aapo Alasuutari"]
