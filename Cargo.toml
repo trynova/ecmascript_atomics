@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["ecmascript_atomics", "gen_copy"]
+members = ["ecmascript_atomics", "fuzz", "gen_copy"]
 
 [workspace.package]
 edition = "2024"

@@ -1681,6 +1681,14 @@ pub fn atomic_pause() {
     core::hint::spin_loop();
 }
 
+/// Size of a word (pointer) on this architecture.
+pub const WORD_SIZE: usize = size_of::<usize>();
+/// Number of words in a block (~cache line) on this architecture. Known to be
+/// 8 on all supported architectures.
+pub const WORDS_IN_BLOCK: usize = 8;
+/// Size of a block (~cache line) on this architecture in bytes.
+pub const BLOCK_SIZE: usize = WORD_SIZE * WORDS_IN_BLOCK;
+
 #[inline(always)]
 #[cfg(any(
     target_arch = "x86",

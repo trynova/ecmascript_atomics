@@ -1,0 +1,24 @@
+[package]
+name = "ecmascript_atomics_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.0", features = ["derive"] }
+ecmascript_atomics = { path = "../ecmascript_atomics" }
+libfuzzer-sys = "0.4"
+memmap2 = "0.9.8"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+
+[[bin]]
+name = "ecmascript_atomics_api"
+path = "fuzz_targets/ecmascript_atomics_api.rs"
+test = false
+doc = false
+bench = false
