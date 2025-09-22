@@ -126,7 +126,8 @@ let (src, dst) = unsafe { (&mut *src.as_ptr(), &mut *dst.as_ptr()) };
         gen_copy_aarch64(&mut result, t, unroll, direction);
     } else {
         gen_copy_x86_combined(&mut result, t, unroll, direction);
-        gen_copy_arm_combined(&mut result, t, unroll, direction);
+        gen_copy_arm(&mut result, t, unroll, direction);
+        gen_copy_aarch64(&mut result, t, unroll, direction);
     }
     result.parse().unwrap()
 }
@@ -364,26 +365,6 @@ fn gen_copy_aarch64(result: &mut String, t: CopyType, unroll: Unroll, direction:
     result.push_str("#[cfg(target_arch = \"aarch64\")]\n");
     start_asm(result);
     perform_unroll(result, t, unroll, direction, gen_aarch64_copy_asm);
-    end_asm(result, false);
-}
-
-fn gen_copy_arm_combined(result: &mut String, t: CopyType, unroll: Unroll, direction: Direction) {
-    let t = match t {
-        CopyType::U8 => t,
-        CopyType::U16 => t,
-        CopyType::U32 => t,
-        _ => unreachable!(
-            "Cannot generate combined assembly when size is not static and 32-bits or below"
-        ),
-    };
-    let unroll = match unroll {
-        Unroll::One => 1,
-        Unroll::WordsInBlock => 8,
-        _ => unreachable!("Cannot generate combined assembly when unroll is word-dependent"),
-    };
-    result.push_str("#[cfg(any(target_arch = \"arm\", target_arch = \"aarch64\"))]\n");
-    start_asm(result);
-    perform_unroll(result, t, unroll, direction, gen_arm_copy_asm);
     end_asm(result, false);
 }
 
