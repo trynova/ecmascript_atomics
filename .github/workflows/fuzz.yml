@@ -39,8 +39,8 @@ jobs:
       - run: cargo install --root "${{ runner.tool_cache }}/cargo-fuzz" --version ${{ env.CARGO_FUZZ_VERSION }} cargo-fuzz --locked
 
       # Build and then run the fuzz target.
-      - run: RUSTFLAGS=-Zsanitizer=address cargo fuzz build ${{ matrix.fuzz_target }}
-      - run: RUSTFLAGS=-Zsanitizer=address cargo fuzz run ${{ matrix.fuzz_target }} -- -max_total_time=${{ env.FUZZ_TIME }}
+      - run: RUSTFLAGS=-Zsanitizer=address cargo +nightly fuzz build ${{ matrix.fuzz_target }}
+      - run: RUSTFLAGS=-Zsanitizer=address cargo +nightly fuzz run ${{ matrix.fuzz_target }} -- -max_total_time=${{ env.FUZZ_TIME }}
 
       # Upload fuzzing artifacts on failure for post-mortem debugging.
       - uses: actions/upload-artifact@v4
