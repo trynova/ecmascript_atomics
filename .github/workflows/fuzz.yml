@@ -1,4 +1,4 @@
-name: Smoke-Test Fuzz Targets
+name: Fuzz testing
 
 on:
   push:
@@ -38,7 +38,8 @@ jobs:
       - run: echo "${{ runner.tool_cache }}/cargo-fuzz/bin" >> $GITHUB_PATH
       - run: cargo install --root "${{ runner.tool_cache }}/cargo-fuzz" --version ${{ env.CARGO_FUZZ_VERSION }} cargo-fuzz --locked
 
-      # Build and then run the fuzz target.
+      # Build and then run the fuzz target. Note that we use address sanitizer
+      # to hopefully catch any mistakes there.
       - run: RUSTFLAGS=-Zsanitizer=address cargo +nightly fuzz build ${{ matrix.fuzz_target }}
       - run: RUSTFLAGS=-Zsanitizer=address cargo +nightly fuzz run ${{ matrix.fuzz_target }} -- -max_total_time=${{ env.FUZZ_TIME }}
 
