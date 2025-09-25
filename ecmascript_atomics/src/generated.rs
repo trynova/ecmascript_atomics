@@ -340,7 +340,7 @@ macro_rules! gen_exchange {
                 scratch = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -392,7 +392,7 @@ macro_rules! gen_exchange {
                 scratch = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -444,7 +444,7 @@ macro_rules! gen_exchange {
                 scratch = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -496,7 +496,7 @@ macro_rules! gen_exchange {
                 scratch = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -939,7 +939,7 @@ macro_rules! gen_fetchop {
                 scratch2 = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -1014,7 +1014,7 @@ macro_rules! gen_fetchop {
                 scratch2 = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -1089,7 +1089,7 @@ macro_rules! gen_fetchop {
                 scratch2 = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
@@ -1164,7 +1164,7 @@ macro_rules! gen_fetchop {
                 scratch2 = out(reg) _,
                 ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
-                options(nostack)
+                options(preserves_flags, nostack)
             );
             $val = res;
         }
