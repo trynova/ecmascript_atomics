@@ -9,10 +9,10 @@
 //!
 //! This library provides atomic operations that match the ECMAScript
 //! specification's memory model: this is effectively the same memory model as
-//! Java's shared object model. This model allows non-atomic reads and writes
-//! to perform data races, and also allows mixed-size atomic reads and writes.
-//! Both of these are undefined behaviour in the C++/Rust memory model, which
-//! is why these atomic operations are implemented using inline assembly.
+//! Java's shared variables model. This model allows non-atomic reads and
+//! writes to perform data races, and also allows mixed-size atomic reads and
+//! writes. Both of these are undefined behaviour in the C++/Rust memory model,
+//! which is why these atomic operations are implemented using inline assembly.
 //!
 //! The contents of the library are copied and adapted from Mozilla Firefox's
 //! source code, basing mainly on [GenerateAtomicOperations.py].
@@ -105,7 +105,19 @@ use crate::private::Sealed;
 /// [`enter`]: crate::RacyMemory::enter
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Ordering {
+    /// No ordering constraints, stores and loads may tear (ie. are not
+    /// necessarily atomic).
+    ///
+    /// Corresponds to [`Unordered`] in LLVM.
+    ///
+    /// [`Unordered`]: https://llvm.org/docs/Atomics.html#unordered
     Unordered,
+    /// All threads see all seqeuentially consistent operations in the same
+    /// order.
+    ///
+    /// Corresponds to [`SeqCst`] in Rust.
+    ///
+    /// [`SeqCst`]: https://doc.rust-lang.org/std/sync/atomic/enum.Ordering.html#variant.SeqCst
     SeqCst,
 }
 
