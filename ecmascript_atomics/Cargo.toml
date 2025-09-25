@@ -10,8 +10,5 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[lib]
-path = "lib.rs"
-
 [dependencies]
 ecmascript_atomics_gen_copy = { path = "../gen_copy", version = "=0.1.0" }
