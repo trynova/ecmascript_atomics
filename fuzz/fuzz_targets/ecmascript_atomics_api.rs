@@ -3,10 +3,9 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #![no_main]
-use core::ptr::NonNull;
 use ecmascript_atomics::{
-    Ordering, RacyAtomicSlice, RacyAtomicU8, RacyAtomicU16, RacyAtomicU32, RacyAtomicU64,
-    unordered_copy, unordered_copy_nonoverlapping,
+    Ordering, RacyAtomicMutSlice, RacyAtomicSlice, RacyAtomicU8, RacyAtomicU16, RacyAtomicU32,
+    RacyAtomicU64, unordered_copy, unordered_copy_nonoverlapping,
 };
 use std::{
     hint::assert_unchecked,
@@ -716,30 +715,12 @@ fuzz_target!(|input: AtomicsFuzzInput| {
     assert!(head.is_empty() && rust_dst.len() == ARENA_SIZE && tail.is_empty());
 
     let mut ecmascript_dst = Box::new([0usize; ARENA_SIZE_IN_WORDS]);
-    {
-        // SAFETY: can transmute usize to u8s.
-        let (head, body, tail) = unsafe { ecmascript_dst.align_to_mut::<u8>() };
-        assert!(head.is_empty() && body.len() == ARENA_SIZE && tail.is_empty());
-    }
+    // SAFETY: can transmute usize to u8s.
+    let (head, ecmascript_dst, tail) = unsafe { ecmascript_dst.align_to_mut::<u8>() };
+    assert!(head.is_empty() && ecmascript_dst.len() == ARENA_SIZE && tail.is_empty());
     // SAFETY: Leaked box allocation is valid for reads and writes; length was
     // checked.
-    let ecmascript_dst = unsafe {
-        RacyAtomicSlice::enter(NonNull::from(Box::leak(ecmascript_dst)).cast(), ARENA_SIZE)
-    };
+    let ecmascript_dst = RacyAtomicMutSlice::from_mut_slice(ecmascript_dst);
 
-    execute_ops(rust_dst, ecmascript_dst.slice(0, usize::MAX), &input.ops);
-
-    // SAFETY: Racy atomics have finished (and actually no racing was performed
-    // as all the ops tests are single-threaded). We can reallocate the memory
-    // as Rust memory again.
-    let (ecmascript_dst, _) = unsafe { ecmascript_dst.exit() };
-
-    // SAFETY: The pointer is indeed pointing to a memory of this type.
-    let _ = unsafe {
-        Box::from_raw(
-            ecmascript_dst
-                .cast::<[usize; ARENA_SIZE_IN_WORDS]>()
-                .as_ptr(),
-        )
-    };
+    execute_ops(rust_dst, ecmascript_dst.as_slice(), &input.ops);
 });
