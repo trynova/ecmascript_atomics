@@ -5,27 +5,13 @@
 #![no_main]
 use core::ptr::NonNull;
 use ecmascript_atomics::{
-    BLOCK_SIZE, WORD_SIZE, WORDS_IN_BLOCK, atomic_add_8_seq_cst, atomic_add_16_seq_cst,
-    atomic_add_32_seq_cst, atomic_add_64_seq_cst, atomic_and_8_seq_cst, atomic_and_16_seq_cst,
-    atomic_and_32_seq_cst, atomic_and_64_seq_cst, atomic_cmp_xchg_8_seq_cst,
-    atomic_cmp_xchg_16_seq_cst, atomic_cmp_xchg_32_seq_cst, atomic_cmp_xchg_64_seq_cst,
-    atomic_copy_block_down_unsynchronized, atomic_copy_block_up_unsynchronized,
-    atomic_copy_unaligned_block_down_unsynchronized, atomic_copy_unaligned_block_up_unsynchronized,
-    atomic_copy_unaligned_word_down_unsynchronized, atomic_copy_unaligned_word_up_unsynchronized,
-    atomic_copy_word_unsynchronized, atomic_copy8_unsynchronized, atomic_copy16_unsynchronized,
-    atomic_copy32_unsynchronized, atomic_exchange_8_seq_cst, atomic_exchange_16_seq_cst,
-    atomic_exchange_32_seq_cst, atomic_exchange_64_seq_cst, atomic_load_8_seq_cst,
-    atomic_load_8_unsynchronized, atomic_load_16_seq_cst, atomic_load_16_unsynchronized,
-    atomic_load_32_seq_cst, atomic_load_32_unsynchronized, atomic_load_64_seq_cst,
-    atomic_load_64_unsynchronized, atomic_or_8_seq_cst, atomic_or_16_seq_cst, atomic_or_32_seq_cst,
-    atomic_or_64_seq_cst, atomic_store_8_seq_cst, atomic_store_8_unsynchronized,
-    atomic_store_16_seq_cst, atomic_store_16_unsynchronized, atomic_store_32_seq_cst,
-    atomic_store_32_unsynchronized, atomic_store_64_seq_cst, atomic_store_64_unsynchronized,
-    atomic_xor_8_seq_cst, atomic_xor_16_seq_cst, atomic_xor_32_seq_cst, atomic_xor_64_seq_cst,
+    Ordering, RacyAtomicSlice, RacyAtomicU8, RacyAtomicU16, RacyAtomicU32, RacyAtomicU64,
+    unordered_copy, unordered_copy_nonoverlapping,
 };
 use std::{
     hint::assert_unchecked,
     ops::{BitAnd, BitOr, BitXor},
+    sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64},
 };
 
 use arbitrary::Arbitrary;
@@ -48,21 +34,6 @@ enum StoreKind {
 }
 
 #[derive(Arbitrary, Clone, Copy, Debug)]
-enum CopyAlignedKind {
-    U8,
-    U16,
-    U32,
-    Usize,
-    Block,
-}
-
-#[derive(Arbitrary, Clone, Copy, Debug)]
-enum CopyUnalignedKind {
-    Usize,
-    Block,
-}
-
-#[derive(Arbitrary, Clone, Copy, Debug)]
 enum FetchOp {
     Add,
     And,
@@ -71,9 +42,27 @@ enum FetchOp {
 }
 
 #[derive(Arbitrary, Clone, Copy, Debug)]
-enum CopyDirection {
-    Up,
-    Down,
+enum OpOrdering {
+    SeqCst,
+    Unordered,
+}
+
+impl From<OpOrdering> for Ordering {
+    fn from(value: OpOrdering) -> Self {
+        match value {
+            OpOrdering::SeqCst => Self::SeqCst,
+            OpOrdering::Unordered => Self::Unordered,
+        }
+    }
+}
+
+impl From<Ordering> for OpOrdering {
+    fn from(value: Ordering) -> Self {
+        match value {
+            Ordering::SeqCst => Self::SeqCst,
+            Ordering::Unordered => Self::Unordered,
+        }
+    }
 }
 
 #[derive(Arbitrary, Debug)]
@@ -81,16 +70,18 @@ enum AtomicsOp {
     AtomicLoad {
         kind: LoadKind,
         offset: u8,
+        order: OpOrdering,
     },
     AtomicStore {
         kind: StoreKind,
         offset: u8,
+        order: OpOrdering,
     },
-    UnorderedLoad {
+    UnalignedLoad {
         kind: LoadKind,
         offset: u8,
     },
-    UnorderedStore {
+    UnalignedStore {
         kind: StoreKind,
         offset: u8,
     },
@@ -107,17 +98,10 @@ enum AtomicsOp {
         op: FetchOp,
         offset: u8,
     },
-    CopyAligned {
-        kind: CopyAlignedKind,
-        direction: CopyDirection,
-        src_offset: u8,
-        dst_offset: u8,
-    },
-    CopyUnaligned {
-        kind: CopyUnalignedKind,
-        direction: CopyDirection,
-        src_offset: u8,
-        dst_offset: u8,
+    Copy {
+        src_offset: u16,
+        dst_offset: u16,
+        len: u16,
     },
 }
 
@@ -141,73 +125,79 @@ fn get_t_mut<T: Copy + Sized>(rust_mem: &mut [u8], offset: usize) -> &mut T {
     &mut body[0]
 }
 
-fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsOp]) {
+fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacyAtomicSlice, ops: &[AtomicsOp]) {
     assert_eq!(rust_mem.len(), ARENA_SIZE);
     assert!(rust_mem.as_ptr().cast::<usize>().is_aligned());
-    assert!(ecmascript_mem.cast::<usize>().is_aligned());
+    assert!(ecmascript_mem.is_aligned::<usize>());
     for op in ops {
         match op {
-            AtomicsOp::AtomicLoad { kind, offset } => {
+            AtomicsOp::AtomicLoad {
+                kind,
+                offset,
+                order,
+            } => {
                 let offset = *offset as usize;
                 match kind {
                     LoadKind::U8 => {
                         let rust_val = get_t::<u8>(rust_mem, offset);
                         let byte_offset = offset * size_of::<u8>();
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_val =
-                            atomic_load_8_seq_cst(unsafe { ecmascript_mem.byte_add(byte_offset) });
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_u8()
+                            .unwrap()
+                            .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U16 => {
                         let rust_val = get_t::<u16>(rust_mem, offset);
                         let byte_offset = offset * size_of::<u16>();
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u16>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_load_16_seq_cst(ecmascript_dst);
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_u16()
+                            .unwrap()
+                            .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U32 => {
                         let rust_val = get_t::<u32>(rust_mem, offset);
                         let byte_offset = offset * size_of::<u32>();
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u32>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_load_32_seq_cst(ecmascript_dst);
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_u32()
+                            .unwrap()
+                            .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U64 => {
                         let rust_val = get_t::<u64>(rust_mem, offset);
                         let byte_offset = offset * size_of::<u64>();
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u64>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_load_64_seq_cst(ecmascript_dst);
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_u64()
+                            .unwrap()
+                            .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
                     }
                 }
             }
-            AtomicsOp::AtomicStore { kind, offset } => {
+            AtomicsOp::AtomicStore {
+                kind,
+                offset,
+                order,
+            } => {
                 let offset = *offset as usize;
                 match *kind {
                     StoreKind::U8(val) => {
                         let byte_offset = offset * size_of::<u8>();
                         rust_mem[byte_offset] = val;
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        atomic_store_8_seq_cst(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_8_seq_cst(ecmascript_dst);
+
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        ecmascript_mem.store(val, (*order).into());
+                        let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U16(val) => {
@@ -218,13 +208,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         assert!(head.is_empty() && tail.is_empty());
                         body[0] = val;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u16>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        atomic_store_16_seq_cst(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_16_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        ecmascript_mem.store(val, (*order).into());
+                        let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U32(val) => {
@@ -235,13 +222,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         assert!(head.is_empty() && tail.is_empty());
                         body[0] = val;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u32>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        atomic_store_32_seq_cst(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_32_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        ecmascript_mem.store(val, (*order).into());
+                        let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U64(val) => {
@@ -252,110 +236,86 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         assert!(head.is_empty() && tail.is_empty());
                         body[0] = val;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u64>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        atomic_store_64_seq_cst(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_64_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        ecmascript_mem.store(val, (*order).into());
+                        let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
                     }
                 }
             }
-            AtomicsOp::UnorderedLoad { kind, offset } => {
+            AtomicsOp::UnalignedLoad { kind, offset } => {
                 let byte_offset = *offset as usize;
                 match kind {
                     LoadKind::U8 => {
                         let rust_val = rust_mem[byte_offset];
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_val = atomic_load_8_unsynchronized(unsafe {
-                            ecmascript_mem.byte_add(byte_offset)
-                        });
+
+                        let ecmascript_val =
+                            ecmascript_mem.slice_from(byte_offset).load_u8().unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U16 => {
                         let bytes = rust_mem[byte_offset..].first_chunk::<2>().unwrap();
                         let rust_val = u16::from_ne_bytes(*bytes);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_load_16_unsynchronized(ecmascript_dst);
+                        let ecmascript_val =
+                            ecmascript_mem.slice_from(byte_offset).load_u16().unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U32 => {
                         let bytes = rust_mem[byte_offset..].first_chunk::<4>().unwrap();
                         let rust_val = u32::from_ne_bytes(*bytes);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_load_32_unsynchronized(ecmascript_dst);
+                        let ecmascript_val =
+                            ecmascript_mem.slice_from(byte_offset).load_u32().unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U64 => {
                         let bytes = rust_mem[byte_offset..].first_chunk::<8>().unwrap();
                         let rust_val = u64::from_ne_bytes(*bytes);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_load_64_unsynchronized(ecmascript_dst);
+                        let ecmascript_val =
+                            ecmascript_mem.slice_from(byte_offset).load_u64().unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                 }
             }
-            AtomicsOp::UnorderedStore { kind, offset } => {
+            AtomicsOp::UnalignedStore { kind, offset } => {
                 let byte_offset = *offset as usize;
                 match *kind {
                     StoreKind::U8(val) => {
                         rust_mem[byte_offset] = val;
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        atomic_store_8_unsynchronized(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_8_unsynchronized(ecmascript_dst);
+
+                        let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
+                        ecmascript_mem.store_u8(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_u8().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U16(val) => {
                         let bytes = rust_mem[byte_offset..].first_chunk_mut::<2>().unwrap();
                         *bytes = u16::to_ne_bytes(val);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        // SAFETY: checked offset and alignment.
-                        atomic_store_16_unsynchronized(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_16_unsynchronized(ecmascript_dst);
+                        let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
+                        ecmascript_mem.store_u16(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_u16().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U32(val) => {
                         let bytes = rust_mem[byte_offset..].first_chunk_mut::<4>().unwrap();
                         *bytes = u32::to_ne_bytes(val);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        // SAFETY: checked offset and alignment.
-                        atomic_store_32_unsynchronized(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_32_unsynchronized(ecmascript_dst);
+                        let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
+                        ecmascript_mem.store_u32(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_u32().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U64(val) => {
                         let bytes = rust_mem[byte_offset..].first_chunk_mut::<8>().unwrap();
                         *bytes = u64::to_ne_bytes(val);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        // SAFETY: checked offset and alignment.
-                        atomic_store_64_unsynchronized(ecmascript_dst, val);
-                        let ecmascript_val = atomic_load_64_unsynchronized(ecmascript_dst);
+                        let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
+                        ecmascript_mem.store_u64(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_u64().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                 }
@@ -365,101 +325,152 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                 match *kind {
                     StoreKind::U8(val) => {
                         let byte_offset = offset * size_of::<u8>();
-                        let guess = val.rotate_left(4);
-                        let rust_val = rust_mem[byte_offset];
-                        if rust_val == guess {
-                            rust_mem[byte_offset] = val;
+                        let guess = 0;
+                        // SAFETY: alignment checked, synchronisation through &mut.
+                        let rust_mem =
+                            unsafe { AtomicU8::from_ptr(&mut rust_mem[byte_offset] as *mut _) };
+                        let rust_val = rust_mem.compare_exchange(
+                            guess,
+                            val,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        if let Err(current) = rust_val {
+                            rust_mem
+                                .compare_exchange(
+                                    current,
+                                    val,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                )
+                                .unwrap();
                         }
-                        if rust_mem[byte_offset] == rust_val {
-                            rust_mem[byte_offset] = val;
-                        }
+                        let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        let ecmascript_val = atomic_cmp_xchg_8_seq_cst(ecmascript_dst, guess, val);
-                        atomic_cmp_xchg_8_seq_cst(ecmascript_dst, ecmascript_val, val);
-                        let final_ecmascript_val = atomic_load_8_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
+                        if let Err(current) = ecmascript_val {
+                            ecmascript_mem.compare_exchange(current, val).unwrap();
+                        }
+                        let final_ecmascript_val = ecmascript_mem.load(Ordering::Unordered);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(final_ecmascript_val, val);
+                        assert_eq!(final_rust_val, final_ecmascript_val);
                     }
                     StoreKind::U16(val) => {
                         let byte_offset = offset * size_of::<u16>();
-                        let guess = val.rotate_left(4);
                         // SAFETY: u8s are transmutable to u16.
                         let (head, body, tail) =
                             unsafe { rust_mem[byte_offset..].align_to_mut::<u16>() };
                         assert!(head.is_empty() && tail.is_empty());
-                        let rust_val = body[0];
-                        if rust_val == guess {
-                            body[0] = val;
+                        let guess = 0;
+                        // SAFETY: alignment checked, synchronisation through &mut.
+                        let rust_mem = unsafe { AtomicU16::from_ptr(&mut body[0] as *mut _) };
+                        let rust_val = rust_mem.compare_exchange(
+                            guess,
+                            val,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        if let Err(current) = rust_val {
+                            rust_mem
+                                .compare_exchange(
+                                    current,
+                                    val,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                )
+                                .unwrap();
                         }
-                        if body[0] == rust_val {
-                            body[0] = val;
-                        }
+                        let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u16>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_cmp_xchg_16_seq_cst(ecmascript_dst, guess, val);
-                        atomic_cmp_xchg_16_seq_cst(ecmascript_dst, ecmascript_val, val);
-                        let final_ecmascript_val = atomic_load_16_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
+                        if let Err(current) = ecmascript_val {
+                            ecmascript_mem.compare_exchange(current, val).unwrap();
+                        }
+                        let final_ecmascript_val = ecmascript_mem.load(Ordering::Unordered);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(final_ecmascript_val, val);
+                        assert_eq!(final_rust_val, final_ecmascript_val);
                     }
                     StoreKind::U32(val) => {
                         let byte_offset = offset * size_of::<u32>();
-                        let guess = val.rotate_left(4);
                         // SAFETY: u8s are transmutable to u32.
                         let (head, body, tail) =
                             unsafe { rust_mem[byte_offset..].align_to_mut::<u32>() };
                         assert!(head.is_empty() && tail.is_empty());
-                        let rust_val = body[0];
-                        if rust_val == guess {
-                            body[0] = val;
+                        let guess = 0;
+                        // SAFETY: alignment checked, synchronisation through &mut.
+                        let rust_mem = unsafe { AtomicU32::from_ptr(&mut body[0] as *mut _) };
+                        let rust_val = rust_mem.compare_exchange(
+                            guess,
+                            val,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        if let Err(current) = rust_val {
+                            rust_mem
+                                .compare_exchange(
+                                    current,
+                                    val,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                )
+                                .unwrap();
                         }
-                        if body[0] == rust_val {
-                            body[0] = val;
-                        }
+                        let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u32>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_cmp_xchg_32_seq_cst(ecmascript_dst, guess, val);
-                        atomic_cmp_xchg_32_seq_cst(ecmascript_dst, ecmascript_val, val);
-                        let final_ecmascript_val = atomic_load_32_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
+                        if let Err(current) = ecmascript_val {
+                            ecmascript_mem.compare_exchange(current, val).unwrap();
+                        }
+                        let final_ecmascript_val = ecmascript_mem.load(Ordering::Unordered);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(final_ecmascript_val, val);
+                        assert_eq!(final_rust_val, final_ecmascript_val);
                     }
                     StoreKind::U64(val) => {
                         let byte_offset = offset * size_of::<u64>();
-                        let guess = val.rotate_left(4);
                         // SAFETY: u8s are transmutable to u64.
                         let (head, body, tail) =
                             unsafe { rust_mem[byte_offset..].align_to_mut::<u64>() };
                         assert!(head.is_empty() && tail.is_empty());
-                        let rust_val = body[0];
-                        if rust_val == guess {
-                            body[0] = val;
+                        let guess = 0;
+                        // SAFETY: alignment checked, synchronisation through &mut.
+                        let rust_mem = unsafe { AtomicU64::from_ptr(&mut body[0] as *mut _) };
+                        let rust_val = rust_mem.compare_exchange(
+                            guess,
+                            val,
+                            std::sync::atomic::Ordering::SeqCst,
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        if let Err(current) = rust_val {
+                            rust_mem
+                                .compare_exchange(
+                                    current,
+                                    val,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                    std::sync::atomic::Ordering::SeqCst,
+                                )
+                                .unwrap();
                         }
-                        if body[0] == rust_val {
-                            body[0] = val;
-                        }
+                        let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u64>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = atomic_cmp_xchg_64_seq_cst(ecmascript_dst, guess, val);
-                        atomic_cmp_xchg_64_seq_cst(ecmascript_dst, ecmascript_val, val);
-                        let final_ecmascript_val = atomic_load_64_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
+                        if let Err(current) = ecmascript_val {
+                            ecmascript_mem.compare_exchange(current, val).unwrap();
+                        }
+                        let final_ecmascript_val = ecmascript_mem.load(Ordering::Unordered);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(final_ecmascript_val, val);
+                        assert_eq!(final_rust_val, final_ecmascript_val);
                     }
                 }
             }
@@ -470,36 +481,36 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         let rust_val = core::mem::replace(get_t_mut::<u8>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u8>();
-                        assert!(byte_offset + size_of::<u8>() < ARENA_SIZE);
-                        let dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        let ecmascript_val = atomic_exchange_8_seq_cst(dst, val);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
                     StoreKind::U16(val) => {
                         let rust_val = core::mem::replace(get_t_mut::<u16>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u16>();
-                        assert!(byte_offset + size_of::<u16>() < ARENA_SIZE);
-                        let dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        let ecmascript_val = atomic_exchange_16_seq_cst(dst, val);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
                     StoreKind::U32(val) => {
                         let rust_val = core::mem::replace(get_t_mut::<u32>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u32>();
-                        assert!(byte_offset + size_of::<u32>() < ARENA_SIZE);
-                        let dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        let ecmascript_val = atomic_exchange_32_seq_cst(dst, val);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
                     StoreKind::U64(val) => {
                         let rust_val = core::mem::replace(get_t_mut::<u64>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u64>();
-                        assert!(byte_offset + size_of::<u64>() < ARENA_SIZE);
-                        let dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        let ecmascript_val = atomic_exchange_64_seq_cst(dst, val);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
                 }
@@ -514,28 +525,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                atomic_add_8_seq_cst
+                                RacyAtomicU8::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                atomic_and_8_seq_cst
+                                RacyAtomicU8::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                atomic_or_8_seq_cst
+                                RacyAtomicU8::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                atomic_xor_8_seq_cst
+                                RacyAtomicU8::fetch_xor
                             }
                         };
                         rust_mem[byte_offset] = rust_result;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        let ecmascript_val = ecmascript_op(ecmascript_dst, val);
-                        let ecmascript_result = atomic_load_8_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
+                        let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(ecmascript_result, rust_result);
                     }
@@ -550,30 +560,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                atomic_add_16_seq_cst
+                                RacyAtomicU16::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                atomic_and_16_seq_cst
+                                RacyAtomicU16::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                atomic_or_16_seq_cst
+                                RacyAtomicU16::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                atomic_xor_16_seq_cst
+                                RacyAtomicU16::fetch_xor
                             }
                         };
                         body[0] = rust_result;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u16>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = ecmascript_op(ecmascript_dst, val);
-                        let ecmascript_result = atomic_load_16_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
+                        let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(ecmascript_result, rust_result);
                     }
@@ -588,30 +595,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                atomic_add_32_seq_cst
+                                RacyAtomicU32::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                atomic_and_32_seq_cst
+                                RacyAtomicU32::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                atomic_or_32_seq_cst
+                                RacyAtomicU32::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                atomic_xor_32_seq_cst
+                                RacyAtomicU32::fetch_xor
                             }
                         };
                         body[0] = rust_result;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u32>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = ecmascript_op(ecmascript_dst, val);
-                        let ecmascript_result = atomic_load_32_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
+                        let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(ecmascript_result, rust_result);
                     }
@@ -626,222 +630,68 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: NonNull<()>, ops: &[AtomicsO
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                atomic_add_64_seq_cst
+                                RacyAtomicU64::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                atomic_and_64_seq_cst
+                                RacyAtomicU64::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                atomic_or_64_seq_cst
+                                RacyAtomicU64::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                atomic_xor_64_seq_cst
+                                RacyAtomicU64::fetch_xor
                             }
                         };
                         body[0] = rust_result;
 
-                        assert!(byte_offset < ARENA_SIZE);
-                        // SAFETY: checked offset.
-                        let ecmascript_dst = unsafe { ecmascript_mem.byte_add(byte_offset) };
-                        assert!(ecmascript_dst.cast::<u64>().is_aligned());
-                        // SAFETY: checked offset and alignment.
-                        let ecmascript_val = ecmascript_op(ecmascript_dst, val);
-                        let ecmascript_result = atomic_load_64_seq_cst(ecmascript_dst);
+                        let ecmascript_mem =
+                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
+                        let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
                         assert_eq!(ecmascript_result, rust_result);
                     }
                 }
             }
-            AtomicsOp::CopyAligned {
-                kind,
-                direction,
+            AtomicsOp::Copy {
                 src_offset,
                 dst_offset,
+                len,
             } => {
-                let src_offset = *src_offset as usize;
-                let dst_offset = *dst_offset as usize;
-                match kind {
-                    CopyAlignedKind::U8 => {
-                        *get_t_mut(rust_mem, dst_offset) = get_t::<u8>(rust_mem, src_offset);
-                        let rust_val = get_t::<u8>(rust_mem, dst_offset);
-
-                        let src_byte_offset = src_offset;
-                        let dst_byte_offset = dst_offset;
-                        assert!(
-                            src_byte_offset + size_of::<u8>() < ARENA_SIZE
-                                && dst_byte_offset + size_of::<u8>() < ARENA_SIZE
-                        );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        atomic_copy8_unsynchronized(src, dst);
-                        let ecmascript_val = atomic_load_8_unsynchronized(dst);
-                        assert_eq!(rust_val, ecmascript_val);
-                    }
-                    CopyAlignedKind::U16 => {
-                        *get_t_mut(rust_mem, dst_offset) = get_t::<u16>(rust_mem, src_offset);
-                        let rust_val = get_t::<u16>(rust_mem, dst_offset);
-
-                        let src_byte_offset = src_offset * size_of::<u16>();
-                        let dst_byte_offset = dst_offset * size_of::<u16>();
-                        assert!(
-                            src_byte_offset + size_of::<u16>() < ARENA_SIZE
-                                && dst_byte_offset + size_of::<u16>() < ARENA_SIZE
-                        );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        atomic_copy16_unsynchronized(src, dst);
-                        let ecmascript_val = atomic_load_16_unsynchronized(dst);
-                        assert_eq!(rust_val, ecmascript_val);
-                    }
-                    CopyAlignedKind::U32 => {
-                        *get_t_mut(rust_mem, dst_offset) = get_t::<u32>(rust_mem, src_offset);
-                        let rust_val = get_t::<u32>(rust_mem, dst_offset);
-
-                        let src_byte_offset = src_offset * size_of::<u32>();
-                        let dst_byte_offset = dst_offset * size_of::<u32>();
-                        assert!(
-                            src_byte_offset + size_of::<u32>() < ARENA_SIZE
-                                && dst_byte_offset + size_of::<u32>() < ARENA_SIZE
-                        );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        atomic_copy32_unsynchronized(src, dst);
-                        let ecmascript_val = atomic_load_32_unsynchronized(dst);
-                        assert_eq!(rust_val, ecmascript_val);
-                    }
-                    CopyAlignedKind::Usize => {
-                        *get_t_mut(rust_mem, dst_offset) = get_t::<usize>(rust_mem, src_offset);
-                        let rust_val = get_t::<usize>(rust_mem, dst_offset);
-
-                        let src_byte_offset = src_offset * size_of::<usize>();
-                        let dst_byte_offset = dst_offset * size_of::<usize>();
-                        assert!(
-                            src_byte_offset + size_of::<usize>() < ARENA_SIZE
-                                && dst_byte_offset + size_of::<usize>() < ARENA_SIZE
-                        );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        atomic_copy_word_unsynchronized(src, dst);
-                        #[cfg(target_pointer_width = "32")]
-                        let ecmascript_val = atomic_load_32_unsynchronized(dst) as usize;
-                        #[cfg(target_pointer_width = "64")]
-                        let ecmascript_val = atomic_load_64_unsynchronized(dst) as usize;
-                        assert_eq!(rust_val, ecmascript_val);
-                    }
-                    CopyAlignedKind::Block => {
-                        let ecmascript_op = match direction {
-                            CopyDirection::Up => {
-                                for index in (0..WORDS_IN_BLOCK).rev() {
-                                    *get_t_mut(rust_mem, dst_offset + index) =
-                                        get_t::<usize>(rust_mem, src_offset + index);
-                                }
-                                atomic_copy_block_up_unsynchronized
-                            }
-                            CopyDirection::Down => {
-                                for index in 0..WORDS_IN_BLOCK {
-                                    *get_t_mut(rust_mem, dst_offset + index) =
-                                        get_t::<usize>(rust_mem, src_offset + index);
-                                }
-                                atomic_copy_block_down_unsynchronized
-                            }
-                        };
-
-                        let src_byte_offset = src_offset * size_of::<usize>();
-                        let dst_byte_offset = dst_offset * size_of::<usize>();
-                        assert!(
-                            src_byte_offset + BLOCK_SIZE < ARENA_SIZE
-                                && dst_byte_offset + BLOCK_SIZE < ARENA_SIZE
-                        );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        ecmascript_op(src, dst);
-                        for index in 0..WORDS_IN_BLOCK {
-                            let rust_val = get_t::<usize>(rust_mem, dst_offset + index);
-                            let dst = unsafe { dst.byte_add(size_of::<usize>() * index) };
-                            #[cfg(target_pointer_width = "32")]
-                            let ecmascript_val = atomic_load_32_unsynchronized(dst) as usize;
-                            #[cfg(target_pointer_width = "64")]
-                            let ecmascript_val = atomic_load_64_unsynchronized(dst) as usize;
-                            assert_eq!(rust_val, ecmascript_val);
-                        }
-                    }
+                // Bound the byte values to the arena size. We use modulo to
+                // not over-sample the ARENA_SIZE itself.
+                let src_byte_offset = (*src_offset as usize) % ARENA_SIZE;
+                let dst_byte_offset = (*dst_offset as usize) % ARENA_SIZE;
+                let max_offset = src_byte_offset.max(dst_byte_offset);
+                let len = (((*len as usize) + max_offset) % ARENA_SIZE).saturating_sub(max_offset);
+                if len == 0 {
+                    continue;
                 }
-            }
-            AtomicsOp::CopyUnaligned {
-                kind,
-                direction,
-                src_offset,
-                dst_offset,
-            } => {
-                let src_byte_offset = *src_offset as usize;
-                let dst_byte_offset = *dst_offset as usize;
-                match kind {
-                    CopyUnalignedKind::Usize => {
-                        let ecmascript_op = match direction {
-                            CopyDirection::Up => {
-                                for index in (0..WORD_SIZE).rev() {
-                                    *get_t_mut(rust_mem, dst_byte_offset + index) =
-                                        get_t::<u8>(rust_mem, src_byte_offset + index);
-                                }
-                                atomic_copy_unaligned_word_up_unsynchronized
-                            }
-                            CopyDirection::Down => {
-                                for index in 0..WORD_SIZE {
-                                    *get_t_mut(rust_mem, dst_byte_offset + index) =
-                                        get_t::<u8>(rust_mem, src_byte_offset + index);
-                                }
-                                atomic_copy_unaligned_word_down_unsynchronized
-                            }
-                        };
+                rust_mem.copy_within(src_byte_offset..src_byte_offset + len, dst_byte_offset);
 
-                        assert!(
-                            src_byte_offset + WORD_SIZE < ARENA_SIZE
-                                && dst_byte_offset + WORD_SIZE < ARENA_SIZE
+                let ecmascript_src = ecmascript_mem.slice(src_byte_offset, src_byte_offset + len);
+                let ecmascript_dst = ecmascript_mem.slice(dst_byte_offset, dst_byte_offset + len);
+                if (src_byte_offset..src_byte_offset + len).contains(&dst_byte_offset)
+                    || (dst_byte_offset..dst_byte_offset + len).contains(&src_byte_offset)
+                {
+                    // Overlapping.
+                    unsafe {
+                        unordered_copy(
+                            ecmascript_src.as_u8().unwrap(),
+                            ecmascript_dst.as_u8().unwrap(),
+                            len,
+                        )
+                    };
+                } else {
+                    unsafe {
+                        unordered_copy_nonoverlapping(
+                            ecmascript_src.as_u8().unwrap(),
+                            ecmascript_dst.as_u8().unwrap(),
+                            len,
                         );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        ecmascript_op(src, dst);
-                        for index in 0..WORD_SIZE {
-                            let rust_val = get_t::<u8>(rust_mem, dst_byte_offset + index);
-                            let dst = unsafe { dst.byte_add(index) };
-                            let ecmascript_val = atomic_load_8_unsynchronized(dst);
-                            assert_eq!(rust_val, ecmascript_val);
-                        }
-                    }
-                    CopyUnalignedKind::Block => {
-                        let ecmascript_op = match direction {
-                            CopyDirection::Up => {
-                                for index in (0..BLOCK_SIZE).rev() {
-                                    *get_t_mut(rust_mem, dst_byte_offset + index) =
-                                        get_t::<u8>(rust_mem, src_byte_offset + index);
-                                }
-                                atomic_copy_unaligned_block_up_unsynchronized
-                            }
-                            CopyDirection::Down => {
-                                for index in 0..BLOCK_SIZE {
-                                    *get_t_mut(rust_mem, dst_byte_offset + index) =
-                                        get_t::<u8>(rust_mem, src_byte_offset + index);
-                                }
-                                atomic_copy_unaligned_block_down_unsynchronized
-                            }
-                        };
-
-                        assert!(
-                            src_byte_offset + BLOCK_SIZE < ARENA_SIZE
-                                && dst_byte_offset + BLOCK_SIZE < ARENA_SIZE
-                        );
-                        let src = unsafe { ecmascript_mem.byte_add(src_byte_offset) };
-                        let dst = unsafe { ecmascript_mem.byte_add(dst_byte_offset) };
-                        ecmascript_op(src, dst);
-                        for index in 0..BLOCK_SIZE {
-                            let rust_val = get_t::<u8>(rust_mem, dst_byte_offset + index);
-                            let dst = unsafe { dst.byte_add(index) };
-                            let ecmascript_val = atomic_load_8_unsynchronized(dst);
-                            assert_eq!(rust_val, ecmascript_val);
-                        }
                     }
                 }
             }
@@ -859,19 +709,37 @@ struct AtomicsFuzzInput {
 }
 
 fuzz_target!(|input: AtomicsFuzzInput| {
-    let mut rust_dst = Box::new([0usize; (u8::MAX as usize) * 8]);
+    const ARENA_SIZE_IN_WORDS: usize = (u8::MAX as usize) * 8;
+    let mut rust_dst = Box::new([0usize; ARENA_SIZE_IN_WORDS]);
     // SAFETY: can transmute usize to u8s.
     let (head, rust_dst, tail) = unsafe { rust_dst.align_to_mut::<u8>() };
     assert!(head.is_empty() && rust_dst.len() == ARENA_SIZE && tail.is_empty());
-    let mut ecmascript_dst = memmap2::MmapMut::map_anon(ARENA_SIZE).expect("Failed to mmap");
-    assert!(ecmascript_dst.as_ptr().cast::<u64>().is_aligned());
-    assert_eq!(ecmascript_dst.len(), ARENA_SIZE);
-    ecmascript_dst.fill(0);
-    let ecmascript_dst: memmap2::MmapRaw = ecmascript_dst.into();
 
-    execute_ops(
-        rust_dst,
-        NonNull::new(ecmascript_dst.as_mut_ptr()).unwrap().cast(),
-        &input.ops,
-    );
+    let mut ecmascript_dst = Box::new([0usize; ARENA_SIZE_IN_WORDS]);
+    {
+        // SAFETY: can transmute usize to u8s.
+        let (head, body, tail) = unsafe { ecmascript_dst.align_to_mut::<u8>() };
+        assert!(head.is_empty() && body.len() == ARENA_SIZE && tail.is_empty());
+    }
+    // SAFETY: Leaked box allocation is valid for reads and writes; length was
+    // checked.
+    let ecmascript_dst = unsafe {
+        RacyAtomicSlice::enter(NonNull::from(Box::leak(ecmascript_dst)).cast(), ARENA_SIZE)
+    };
+
+    execute_ops(rust_dst, ecmascript_dst.slice(0, usize::MAX), &input.ops);
+
+    // SAFETY: Racy atomics have finished (and actually no racing was performed
+    // as all the ops tests are single-threaded). We can reallocate the memory
+    // as Rust memory again.
+    let (ecmascript_dst, _) = unsafe { ecmascript_dst.exit() };
+
+    // SAFETY: The pointer is indeed pointing to a memory of this type.
+    let _ = unsafe {
+        Box::from_raw(
+            ecmascript_dst
+                .cast::<[usize; ARENA_SIZE_IN_WORDS]>()
+                .as_ptr(),
+        )
+    };
 });
