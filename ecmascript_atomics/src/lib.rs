@@ -98,8 +98,11 @@ use crate::private::Sealed;
 ///
 /// The ECMAScript memory model is explained in the [ECMAScript Language
 /// specification](https://tc39.es/ecma262/#sec-memory-model). Note that the
-/// "INIT" ordering is not offered here as it is the purview of the memory
-/// allocator.
+/// "INIT" ordering is not offered here as all initialisation of the memory
+/// should happen before calling the [`enter`] method used to move memory from
+/// the Rust memory model over into the ECMAScript memory model.
+///
+/// [`enter`]: crate::RacyMemory::enter
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Ordering {
     Unordered,
