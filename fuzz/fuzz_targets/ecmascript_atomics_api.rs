@@ -4,8 +4,8 @@
 
 #![no_main]
 use ecmascript_atomics::{
-    Ordering, RacyAtomicMutSlice, RacyAtomicSlice, RacyAtomicU8, RacyAtomicU16, RacyAtomicU32,
-    RacyAtomicU64, unordered_copy, unordered_copy_nonoverlapping,
+    Ordering, RacyMutSlice, RacySlice, RacyU8, RacyU16, RacyU32, RacyU64, unordered_copy,
+    unordered_copy_nonoverlapping,
 };
 use std::{
     hint::assert_unchecked,
@@ -124,7 +124,7 @@ fn get_t_mut<T: Copy + Sized>(rust_mem: &mut [u8], offset: usize) -> &mut T {
     &mut body[0]
 }
 
-fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacyAtomicSlice, ops: &[AtomicsOp]) {
+fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice, ops: &[AtomicsOp]) {
     assert_eq!(rust_mem.len(), ARENA_SIZE);
     assert!(rust_mem.as_ptr().cast::<usize>().is_aligned());
     assert!(ecmascript_mem.is_aligned::<usize>());
@@ -524,19 +524,19 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacyAtomicSlice, ops: &[Atom
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyAtomicU8::fetch_add
+                                RacyU8::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyAtomicU8::fetch_and
+                                RacyU8::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyAtomicU8::fetch_or
+                                RacyU8::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyAtomicU8::fetch_xor
+                                RacyU8::fetch_xor
                             }
                         };
                         rust_mem[byte_offset] = rust_result;
@@ -559,19 +559,19 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacyAtomicSlice, ops: &[Atom
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyAtomicU16::fetch_add
+                                RacyU16::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyAtomicU16::fetch_and
+                                RacyU16::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyAtomicU16::fetch_or
+                                RacyU16::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyAtomicU16::fetch_xor
+                                RacyU16::fetch_xor
                             }
                         };
                         body[0] = rust_result;
@@ -594,19 +594,19 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacyAtomicSlice, ops: &[Atom
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyAtomicU32::fetch_add
+                                RacyU32::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyAtomicU32::fetch_and
+                                RacyU32::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyAtomicU32::fetch_or
+                                RacyU32::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyAtomicU32::fetch_xor
+                                RacyU32::fetch_xor
                             }
                         };
                         body[0] = rust_result;
@@ -629,19 +629,19 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacyAtomicSlice, ops: &[Atom
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyAtomicU64::fetch_add
+                                RacyU64::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyAtomicU64::fetch_and
+                                RacyU64::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyAtomicU64::fetch_or
+                                RacyU64::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyAtomicU64::fetch_xor
+                                RacyU64::fetch_xor
                             }
                         };
                         body[0] = rust_result;
@@ -720,7 +720,7 @@ fuzz_target!(|input: AtomicsFuzzInput| {
     assert!(head.is_empty() && ecmascript_dst.len() == ARENA_SIZE && tail.is_empty());
     // SAFETY: Leaked box allocation is valid for reads and writes; length was
     // checked.
-    let ecmascript_dst = RacyAtomicMutSlice::from_mut_slice(ecmascript_dst);
+    let ecmascript_dst = RacyMutSlice::from_mut_slice(ecmascript_dst);
 
     execute_ops(rust_dst, ecmascript_dst.as_slice(), &input.ops);
 });

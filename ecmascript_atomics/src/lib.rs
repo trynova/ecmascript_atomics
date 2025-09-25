@@ -107,12 +107,6 @@ pub enum Ordering {
 ///
 /// See [std::sync::atomic::fence] for details.
 #[inline(always)]
-#[cfg(any(
-    target_arch = "x86",
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "arm"
-))]
 pub fn fence() {
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
@@ -122,12 +116,6 @@ pub fn fence() {
 ///
 /// See [std::hint::spin_loop] for details.
 #[inline(always)]
-#[cfg(any(
-    target_arch = "x86",
-    target_arch = "x86_64",
-    target_arch = "aarch64",
-    target_arch = "arm"
-))]
 pub fn atomic_pause() {
     core::hint::spin_loop();
 }
@@ -143,8 +131,8 @@ pub fn atomic_pause() {
 /// APIs, meaning that usage should generally be careful and try to avoid both
 /// data races and mixed-size atomics.
 ///
-/// [`enter`]: crate::RacyAtomicMemory::enter
-/// [`exit`]: crate::RacyAtomicMemory::exit
+/// [`enter`]: crate::RacyMemory::enter
+/// [`exit`]: crate::RacyMemory::exit
 ///
 /// # Soundness
 ///
@@ -162,19 +150,19 @@ pub fn atomic_pause() {
 /// Each `enter` call must be matched by an equal `exit` call on the same
 /// slice, lest the ECMAScript memory be leaked.
 ///
-/// [`enter`]: crate::RacyAtomicMemory::enter
-/// [`exit`]: crate::RacyAtomicMemory::exit
-pub struct RacyAtomicMemory {
+/// [`enter`]: crate::RacyMemory::enter
+/// [`exit`]: crate::RacyMemory::exit
+pub struct RacyMemory {
     ptr: NonNull<()>,
     len: usize,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicMemory {}
+unsafe impl Send for RacyMemory {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicMemory {}
+unsafe impl Sync for RacyMemory {}
 
-impl RacyAtomicMemory {
+impl RacyMemory {
     /// Move a memory allocation into the ECMAScript memory model.
     ///
     /// # Safety
@@ -219,7 +207,7 @@ impl RacyAtomicMemory {
     /// # Soundness
     ///
     /// This deallocates the ECMAScript memory behind `ptr` (in an abstract
-    /// sense). It is thus strictly forbidden to use any RacyAtomics derived
+    /// sense). It is thus strictly forbidden to use any racy value derived
     /// from this memory after this call happens, on any thread. This call must
     /// therefore be strictly synchronised between threads, and only one thread
     /// is allowed to perform this call.
@@ -243,8 +231,8 @@ impl RacyAtomicMemory {
     }
 
     /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacyAtomicSlice<'_> {
-        RacyAtomicSlice {
+    pub fn as_slice(&self) -> RacySlice<'_> {
+        RacySlice {
             ptr: self.ptr,
             len: self.len,
             __marker: PhantomData,
@@ -259,13 +247,13 @@ impl RacyAtomicMemory {
 ///
 /// The memory behind this handle is not and must not be read as Rust memory.
 /// Any Rust reads or writes into the memory are undefined behaviour.
-pub struct RacyAtomicMutSlice<'a> {
+pub struct RacyMutSlice<'a> {
     ptr: NonNull<()>,
     len: usize,
     __marker: PhantomData<&'a mut UnsafeCell<u8>>,
 }
 
-impl Drop for RacyAtomicMutSlice<'_> {
+impl Drop for RacyMutSlice<'_> {
     fn drop(&mut self) {
         // Conceptually deallocate the ECMAScript memory pointed to by the
         // slice and produce a new Rust memory in its place.
@@ -286,7 +274,7 @@ impl Drop for RacyAtomicMutSlice<'_> {
     }
 }
 
-impl<'a> RacyAtomicMutSlice<'a> {
+impl<'a> RacyMutSlice<'a> {
     /// Take ownership of an exclusively owned slice of bytes and produce an
     /// exclusively owned slice of racy atomic memory.
     ///
@@ -319,8 +307,8 @@ impl<'a> RacyAtomicMutSlice<'a> {
     }
 
     /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacyAtomicSlice<'_> {
-        RacyAtomicSlice {
+    pub fn as_slice(&self) -> RacySlice<'_> {
+        RacySlice {
             ptr: self.ptr,
             len: self.len,
             __marker: PhantomData,
@@ -336,22 +324,22 @@ impl<'a> RacyAtomicMutSlice<'a> {
 /// The memory behind this handle is not and must not be read as Rust memory.
 /// Any Rust reads or writes into the memory are undefined behaviour.
 #[derive(Clone, Copy)]
-pub struct RacyAtomicSlice<'a> {
+pub struct RacySlice<'a> {
     ptr: NonNull<()>,
     len: usize,
     __marker: PhantomData<&'a UnsafeCell<u8>>,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicSlice<'_> {}
+unsafe impl Send for RacySlice<'_> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicSlice<'_> {}
+unsafe impl Sync for RacySlice<'_> {}
 
-impl<'a> RacyAtomicSlice<'a> {
+impl<'a> RacySlice<'a> {
     /// Destructure a racy atomic memory slice into raw parts.
     #[inline(always)]
-    pub fn into_raw_parts(self) -> (RacyAtomicPtr, usize) {
-        (RacyAtomicPtr::from_ptr(self.ptr), self.len)
+    pub fn into_raw_parts(self) -> (RacyPtr, usize) {
+        (RacyPtr::from_ptr(self.ptr), self.len)
     }
 
     /// Create a new racy atomic memory slice from a racy atomic byte pointer
@@ -363,7 +351,7 @@ impl<'a> RacyAtomicSlice<'a> {
     /// `len` bytes. See [new] for the soundness requirements of racy atomic
     /// memory. Note that this function does not "reallocate" the pointed-to memory.
     #[inline(always)]
-    pub unsafe fn from_raw_parts(ptr: RacyAtomicPtr, len: usize) -> Self {
+    pub unsafe fn from_raw_parts(ptr: RacyPtr, len: usize) -> Self {
         Self {
             ptr: ptr.0,
             len,
@@ -595,44 +583,44 @@ impl<'a> RacyAtomicSlice<'a> {
 
     /// Convert the memory into a racy atomic byte at the start of the slice.
     /// Returns None if the slice is smaller than 1 byte.
-    pub fn as_u8(&self) -> Option<RacyAtomicU8<'a>> {
+    pub fn as_u8(&self) -> Option<RacyU8<'a>> {
         if self.is_empty() {
             None
         } else {
-            Some(RacyAtomicU8::from_ptr(self.ptr))
+            Some(RacyU8::from_ptr(self.ptr))
         }
     }
 
     /// Convert the memory into a racy atomic u16 at the start of the slice.
     /// Returns None if the slice is smaller than 2 bytes in size or is not
     /// correctly aligned.
-    pub fn as_u16(&self) -> Option<RacyAtomicU16<'a>> {
+    pub fn as_u16(&self) -> Option<RacyU16<'a>> {
         if self.len() < 2 || !self.ptr.cast::<u16>().is_aligned() {
             None
         } else {
-            Some(RacyAtomicU16::from_ptr(self.ptr))
+            Some(RacyU16::from_ptr(self.ptr))
         }
     }
 
     /// Convert the memory into a racy atomic u32 at the start of the slice.
     /// Returns None if the slice is smaller than 4 bytes in size or is not
     /// correctly aligned.
-    pub fn as_u32(&self) -> Option<RacyAtomicU32<'a>> {
+    pub fn as_u32(&self) -> Option<RacyU32<'a>> {
         if self.len() < 4 || !self.ptr.cast::<u32>().is_aligned() {
             None
         } else {
-            Some(RacyAtomicU32::from_ptr(self.ptr))
+            Some(RacyU32::from_ptr(self.ptr))
         }
     }
 
     /// Convert the memory into a racy atomic u64 at the start of the slice.
     /// Returns None if the slice is smaller than 8 bytes in size or is not
     /// correctly aligned.
-    pub fn as_u64(&self) -> Option<RacyAtomicU64<'a>> {
+    pub fn as_u64(&self) -> Option<RacyU64<'a>> {
         if self.len() < 8 || !self.ptr.cast::<u64>().is_aligned() {
             None
         } else {
-            Some(RacyAtomicU64::from_ptr(self.ptr))
+            Some(RacyU64::from_ptr(self.ptr))
         }
     }
 }
@@ -641,14 +629,14 @@ impl<'a> RacyAtomicSlice<'a> {
 ///
 /// This is intended for unsafe usage only, where eg. the size of an EMCAScript
 /// memory is stored separately from the pointer.
-pub struct RacyAtomicPtr(NonNull<()>);
+pub struct RacyPtr(NonNull<()>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicPtr {}
+unsafe impl Send for RacyPtr {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicPtr {}
+unsafe impl Sync for RacyPtr {}
 
-impl RacyAtomicPtr {
+impl RacyPtr {
     fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr)
     }
@@ -667,14 +655,14 @@ impl RacyAtomicPtr {
 
 /// An opaque pointer to a byte of memory implementing the ECMAScript atomic
 /// memory model.
-pub struct RacyAtomicU8<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u8>>);
+pub struct RacyU8<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u8>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicU8<'_> {}
+unsafe impl Send for RacyU8<'_> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicU8<'_> {}
+unsafe impl Sync for RacyU8<'_> {}
 
-impl RacyAtomicU8<'_> {
+impl RacyU8<'_> {
     fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr, PhantomData)
     }
@@ -845,14 +833,14 @@ impl RacyAtomicU8<'_> {
     }
 }
 
-pub struct RacyAtomicU16<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u16>>);
+pub struct RacyU16<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u16>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicU16<'_> {}
+unsafe impl Send for RacyU16<'_> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicU16<'_> {}
+unsafe impl Sync for RacyU16<'_> {}
 
-impl RacyAtomicU16<'_> {
+impl RacyU16<'_> {
     fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr, PhantomData)
     }
@@ -1023,14 +1011,14 @@ impl RacyAtomicU16<'_> {
     }
 }
 
-pub struct RacyAtomicU32<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u32>>);
+pub struct RacyU32<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u32>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicU32<'_> {}
+unsafe impl Send for RacyU32<'_> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicU32<'_> {}
+unsafe impl Sync for RacyU32<'_> {}
 
-impl RacyAtomicU32<'_> {
+impl RacyU32<'_> {
     fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr, PhantomData)
     }
@@ -1201,14 +1189,14 @@ impl RacyAtomicU32<'_> {
     }
 }
 
-pub struct RacyAtomicU64<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u64>>);
+pub struct RacyU64<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u64>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyAtomicU64<'_> {}
+unsafe impl Send for RacyU64<'_> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyAtomicU64<'_> {}
+unsafe impl Sync for RacyU64<'_> {}
 
-impl RacyAtomicU64<'_> {
+impl RacyU64<'_> {
     fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr, PhantomData)
     }
@@ -1370,7 +1358,7 @@ impl RacyAtomicU64<'_> {
 ///   size.
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
-pub unsafe fn unordered_copy_nonoverlapping(src: RacyAtomicU8, dst: RacyAtomicU8, count: usize) {
+pub unsafe fn unordered_copy_nonoverlapping(src: RacyU8, dst: RacyU8, count: usize) {
     unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
 }
 
@@ -1398,7 +1386,7 @@ pub unsafe fn unordered_copy_nonoverlapping(src: RacyAtomicU8, dst: RacyAtomicU8
 ///   overlap, the `dst` pointer must not be invalidated by `src` reads.)
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
-pub unsafe fn unordered_copy(src: RacyAtomicU8, dst: RacyAtomicU8, count: usize) {
+pub unsafe fn unordered_copy(src: RacyU8, dst: RacyU8, count: usize) {
     if dst.as_ptr() <= src.as_ptr() {
         unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
     } else {
