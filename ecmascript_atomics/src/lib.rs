@@ -1748,34 +1748,34 @@ mod test {
         unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xF0F0_F0F0_F0F0_F0F0) };
         atomic_copy_block_down_unsynchronized(src, dst);
         assert_eq!(
-            unsafe { src.cast::<[u8; size_of::<usize>() * 8]>().read() },
-            unsafe { dst.cast::<[u8; size_of::<usize>() * 8]>().read() },
+            unsafe { src.cast::<[u8; usize::BITS as usize]>().read() },
+            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
         );
         unsafe { src.cast::<[u64; 16]>().as_mut().fill(0x0F0F_0F0F_0F0F_0F0F) };
         atomic_copy_block_up_unsynchronized(src, dst);
         assert_eq!(
-            unsafe { src.cast::<[u8; size_of::<usize>() * 8]>().read() },
-            unsafe { dst.cast::<[u8; size_of::<usize>() * 8]>().read() },
+            unsafe { src.cast::<[u8; usize::BITS as usize]>().read() },
+            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
         );
         unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xABCD_EF01_2345_6789) };
         atomic_copy_unaligned_block_down_unsynchronized(unsafe { src.byte_add(1) }, dst);
         assert_eq!(
             unsafe {
                 src.byte_add(1)
-                    .cast::<[u8; size_of::<usize>() * 8]>()
+                    .cast::<[u8; usize::BITS as usize]>()
                     .read()
             },
-            unsafe { dst.cast::<[u8; size_of::<usize>() * 8]>().read() },
+            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
         );
         unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xBCDE_F012_3456_789A) };
         atomic_copy_unaligned_block_up_unsynchronized(unsafe { src.byte_add(3) }, dst);
         assert_eq!(
             unsafe {
                 src.byte_add(3)
-                    .cast::<[u8; size_of::<usize>() * 8]>()
+                    .cast::<[u8; usize::BITS as usize]>()
                     .read()
             },
-            unsafe { dst.cast::<[u8; size_of::<usize>() * 8]>().read() },
+            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
         );
         unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xCDEF_0123_4567_89AB) };
         unsafe { dst.cast::<[u64; 16]>().as_mut().fill(0) };

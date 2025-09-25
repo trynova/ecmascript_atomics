@@ -36,10 +36,7 @@ fn skip_comma(s: &mut proc_macro::token_stream::IntoIter) {
     if let Some(TokenTree::Punct(punct_item)) = s.next() {
         match punct_item.to_string().as_str() {
             "," => {}
-            _ => panic!(
-                "Unexpected punctuation '{}': expected a ','.",
-                punct_item.to_string()
-            ),
+            _ => panic!("Unexpected punctuation '{}': expected a ','.", punct_item),
         };
     } else {
         panic!("Missing comma after argument");
@@ -59,7 +56,7 @@ fn parse_inputs(item: TokenStream) -> (CopyType, Unroll, Direction) {
             "usize" => CopyType::Usize,
             _ => panic!(
                 "Unexpected type parameter '{}': expected a 'u8', 'u16', 'u32', or 'usize'.",
-                type_item.to_string()
+                type_item
             ),
         };
     } else {
@@ -74,7 +71,7 @@ fn parse_inputs(item: TokenStream) -> (CopyType, Unroll, Direction) {
             "1" => Unroll::One,
             _ => panic!(
                 "Unexpected unroll parameter '{}': expected expected a '1', 'BLOCK_SIZE', 'WORD_SIZE', or 'WORDS_IN_BLOCK'.",
-                unroll_item.to_string()
+                unroll_item
             ),
         };
     } else if let Some(TokenTree::Ident(unroll_item)) = unroll_item {
@@ -84,7 +81,7 @@ fn parse_inputs(item: TokenStream) -> (CopyType, Unroll, Direction) {
             "WORDS_IN_BLOCK" => Unroll::WordsInBlock,
             _ => panic!(
                 "Unexpected unroll parameter '{}': expected expected a '1', 'BLOCK_SIZE', 'WORD_SIZE', or 'WORDS_IN_BLOCK'.",
-                unroll_item.to_string()
+                unroll_item
             ),
         };
     } else {
@@ -99,7 +96,7 @@ fn parse_inputs(item: TokenStream) -> (CopyType, Unroll, Direction) {
             "\"up\"" => Direction::Up,
             _ => panic!(
                 "Unexpected direction parameter '{}': expected expected 'up' or 'down'.",
-                direction_item.to_string()
+                direction_item
             ),
         };
     } else {
@@ -107,7 +104,7 @@ fn parse_inputs(item: TokenStream) -> (CopyType, Unroll, Direction) {
             "Did not find valid direction parameter in the third argument position: expected expected 'up' or 'down'."
         );
     };
-    for _ in item {
+    if item.next().is_some() {
         panic!("Unexpectedly found extra parameters in gen_copy! macro");
     }
     (t, unroll, direction)
@@ -143,7 +140,7 @@ fn perform_unroll(
     direction: Direction,
     f: impl Fn(&mut String, CopyType, u8),
 ) {
-    let range = (0..unroll).into_iter();
+    let range = 0..unroll;
     if direction == Direction::Up {
         for offset in range.rev() {
             f(result, t, offset);
