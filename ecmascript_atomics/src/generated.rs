@@ -29,15 +29,12 @@ macro_rules! fence {
 macro_rules! gen_load {
     (u8, $ptr: ident, $barrier: tt) => {
         let z: u8;
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "mov {val}, [{ptr}]",
                 fence!(false, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg_byte) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -48,7 +45,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldrb {val:w}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -59,7 +56,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldrb {val:w}, [{ptr}]",
                 fence!($barrier, arm),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -69,15 +66,12 @@ macro_rules! gen_load {
     };
     (u16, $ptr: ident, $barrier: tt) => {
         let z: u16;
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "mov {val:x}, [{ptr}]",
                 fence!(false, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -88,7 +82,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldrh {val:w}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -99,7 +93,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldrh {val:w}, [{ptr}]",
                 fence!($barrier, arm),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -109,15 +103,12 @@ macro_rules! gen_load {
     };
     (u32, $ptr: ident, $barrier: tt) => {
         let z: u32;
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "mov {val:e}, [{ptr}]",
                 fence!(false, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -128,7 +119,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldr {val:w}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -139,7 +130,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldr {val:w}, [{ptr}]",
                 fence!($barrier, arm),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -149,15 +140,12 @@ macro_rules! gen_load {
     };
     (u64, $ptr: ident, $barrier: tt) => {
         let z: u64;
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(target_arch = "x86_64")]
         unsafe {
             core::arch::asm!(
                 "mov {val:r}, [{ptr}]",
                 fence!(false, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -168,7 +156,7 @@ macro_rules! gen_load {
             core::arch::asm!(
                 "ldr {val:x}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = lateout(reg) z,
                 options(preserves_flags, nostack, pure, readonly)
             );
@@ -188,15 +176,12 @@ macro_rules! gen_load {
 
 macro_rules! gen_store {
     (u8, $ptr: ident, $val: ident, $barrier: tt) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "mov [{ptr}], {val}",
                 fence!($barrier, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg_byte) $val,
                 options(preserves_flags, nostack)
             );
@@ -208,7 +193,7 @@ macro_rules! gen_store {
                 fence!($barrier, aarch64),
                 "strb {val:w}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -220,22 +205,19 @@ macro_rules! gen_store {
                 fence!($barrier, arm),
                 "strb {val:w}, [{ptr}]",
                 fence!($barrier, arm),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
         }
     };
     (u16, $ptr: ident, $val: ident, $barrier: tt) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "mov [{ptr}], {val:x}",
                 fence!($barrier, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -247,7 +229,7 @@ macro_rules! gen_store {
                 fence!($barrier, aarch64),
                 "strh {val:w}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -259,22 +241,19 @@ macro_rules! gen_store {
                 fence!($barrier, arm),
                 "strh {val:w}, [{ptr}]",
                 fence!($barrier, arm),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
         }
     };
     (u32, $ptr: ident, $val: ident, $barrier: tt) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "mov [{ptr}], {val:e}",
                 fence!($barrier, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -286,7 +265,7 @@ macro_rules! gen_store {
                 fence!($barrier, aarch64),
                 "str {val:w}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -298,22 +277,19 @@ macro_rules! gen_store {
                 fence!($barrier, arm),
                 "str {val:w}, [{ptr}]",
                 fence!($barrier, arm),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
         }
     };
     (u64, $ptr: ident, $val: ident, $barrier: tt) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(target_arch = "x86_64")]
         unsafe {
             core::arch::asm!(
                 "mov [{ptr}], {val:r}",
                 fence!($barrier, x86),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -325,7 +301,7 @@ macro_rules! gen_store {
                 fence!($barrier, aarch64),
                 "str {val:x}, [{ptr}]",
                 fence!($barrier, aarch64),
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -340,14 +316,11 @@ macro_rules! gen_store {
 
 macro_rules! gen_exchange {
     (u8, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "xchg [{ptr}], {val}",
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = inout(reg_byte) $val,
                 options(preserves_flags, nostack)
             );
@@ -365,7 +338,7 @@ macro_rules! gen_exchange {
                 "dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -385,7 +358,7 @@ macro_rules! gen_exchange {
                 "dmb sy",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -395,14 +368,11 @@ macro_rules! gen_exchange {
         return $val;
     };
     (u16, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "xchg [{ptr}], {val:x}",
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = inout(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -420,7 +390,7 @@ macro_rules! gen_exchange {
                 "dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -440,7 +410,7 @@ macro_rules! gen_exchange {
                 "dmb sy",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -450,14 +420,11 @@ macro_rules! gen_exchange {
         return $val;
     };
     (u32, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "xchg [{ptr}], {val:e}",
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = inout(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -475,7 +442,7 @@ macro_rules! gen_exchange {
                 "dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -495,7 +462,7 @@ macro_rules! gen_exchange {
                 "dmb sy",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -505,14 +472,11 @@ macro_rules! gen_exchange {
         return $val;
     };
     (u64, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(target_arch = "x86_64")]
         unsafe {
             core::arch::asm!(
                 "xchg [{ptr}], {val:r}",
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = inout(reg) $val,
                 options(preserves_flags, nostack)
             );
@@ -530,7 +494,7 @@ macro_rules! gen_exchange {
                 "dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -548,16 +512,13 @@ macro_rules! gen_exchange {
 
 macro_rules! gen_cmpxchg {
     (u8, $ptr: ident, $old_val: ident, $new_val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "lock; cmpxchg [{ptr}], {new_val}",
                 // Load old_val into RAX as input/output register
                 inout("al") $old_val,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 new_val = in(reg_byte) $new_val,
                 options(nostack)
             );
@@ -578,7 +539,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -602,7 +563,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb sy",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -613,16 +574,13 @@ macro_rules! gen_cmpxchg {
         return $old_val;
     };
     (u16, $ptr: ident, $old_val: ident, $new_val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "lock; cmpxchg [{ptr}], {new_val:x}",
                 // Load old_val into RAX as input/output register
                 inout("ax") $old_val,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 new_val = in(reg) $new_val,
                 options(nostack)
             );
@@ -643,7 +601,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -667,7 +625,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb sy",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -678,16 +636,13 @@ macro_rules! gen_cmpxchg {
         return $old_val;
     };
     (u32, $ptr: ident, $old_val: ident, $new_val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             core::arch::asm!(
                 "lock; cmpxchg [{ptr}], {new_val:e}",
                 // Load old_val into RAX as input/output register
                 inout("eax") $old_val,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 new_val = in(reg) $new_val,
                 options(nostack)
             );
@@ -708,7 +663,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -732,7 +687,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb sy",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -743,9 +698,6 @@ macro_rules! gen_cmpxchg {
         return $old_val;
     };
     (u64, $ptr: ident, $old_val: ident, $new_val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(target_arch = "x86")]
         unsafe {
             let [b0, b1, b2, b3, b4, b5, b6, b7] = $old_val.to_le_bytes();
@@ -759,7 +711,7 @@ macro_rules! gen_cmpxchg {
                 // Load old_val into EDX:EAX (high:low).
                 inout("edx") old_top,
                 inout("eax") old_bot,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 // Load old_val into ECX:EBX (high:low).
                 in("ecx") new_top,
                 in("ebx") new_bot,
@@ -776,7 +728,7 @@ macro_rules! gen_cmpxchg {
                 "lock; cmpxchg [{ptr}], {new_val:r}",
                 // Load old_val into RAX as input/output register
                 inout("rax") $old_val,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 new_val = in(reg) $new_val,
                 options(nostack)
             );
@@ -797,7 +749,7 @@ macro_rules! gen_cmpxchg {
                 "3: dmb ish",
                 res = out(reg) res,
                 scratch = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 old_val = in(reg) $old_val,
                 new_val = in(reg) $new_val,
                 options(nostack)
@@ -830,7 +782,7 @@ macro_rules! gen_cmpxchg {
                 "mov {old_top} r1",
                 inout(reg) old_bot,
                 inout(reg) old_top,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 new_bot = in(reg) new_bot,
                 new_top = in(reg) new_top,
                 out("r0") _,
@@ -942,9 +894,6 @@ macro_rules! fetchop {
 
 macro_rules! gen_fetchop {
     (u8, $op: tt, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if $op == "add" {
@@ -952,7 +901,7 @@ macro_rules! gen_fetchop {
                 core::arch::asm!(
                     "lock; xadd [{ptr}], {val}",
                     val = inout(reg_byte) $val,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     options(nostack)
                 );
             } else {
@@ -966,7 +915,7 @@ macro_rules! gen_fetchop {
                     // Use of RAX is required for the CMPXCHG instruction.
                     out("al") res,
                     scratch = out(reg_byte) _,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     val = in(reg_byte) $val,
                     options(nostack)
                 );
@@ -988,7 +937,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -1010,7 +959,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -1020,9 +969,6 @@ macro_rules! gen_fetchop {
         return $val;
     };
     (u16, $op: tt, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if $op == "add" {
@@ -1030,7 +976,7 @@ macro_rules! gen_fetchop {
                 core::arch::asm!(
                     "lock; xadd [{ptr}], {val:x}",
                     val = inout(reg) $val,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     options(nostack)
                 );
             } else {
@@ -1044,7 +990,7 @@ macro_rules! gen_fetchop {
                     // Use of RAX is required for the CMPXCHG instruction.
                     out("ax") res,
                     scratch = out(reg) _,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     val = in(reg) $val,
                     options(nostack)
                 );
@@ -1066,7 +1012,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -1088,7 +1034,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -1098,9 +1044,6 @@ macro_rules! gen_fetchop {
         return $val;
     };
     (u32, $op: tt, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if $op == "add" {
@@ -1108,7 +1051,7 @@ macro_rules! gen_fetchop {
                 core::arch::asm!(
                     "lock; xadd [{ptr}], {val:e}",
                     val = inout(reg) $val,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     options(nostack)
                 );
             } else {
@@ -1122,7 +1065,7 @@ macro_rules! gen_fetchop {
                     // Use of RAX is required for the CMPXCHG instruction.
                     out("eax") res,
                     scratch = out(reg) _,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     val = in(reg) $val,
                     options(nostack)
                 );
@@ -1144,7 +1087,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -1166,7 +1109,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
@@ -1176,9 +1119,6 @@ macro_rules! gen_fetchop {
         return $val;
     };
     (u64, $op: tt, $ptr: ident, $val: ident) => {
-        // SAFETY: ptr is NonNull<()>; it is never null, dangling, or unaligned.
-        let ptr = unsafe { &mut *$ptr.as_ptr() };
-
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         unsafe {
             if $op == "add" {
@@ -1186,7 +1126,7 @@ macro_rules! gen_fetchop {
                 core::arch::asm!(
                     "lock; xadd [{ptr}], {val:r}",
                     val = inout(reg) $val,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     options(nostack)
                 );
             } else {
@@ -1200,7 +1140,7 @@ macro_rules! gen_fetchop {
                     // Use of RAX is required for the CMPXCHG instruction.
                     out("rax") res,
                     scratch = out(reg) _,
-                    ptr = in(reg) ptr,
+                    ptr = in(reg) $ptr.as_ptr(),
                     val = in(reg) $val,
                     options(nostack)
                 );
@@ -1222,7 +1162,7 @@ macro_rules! gen_fetchop {
                 res = out(reg) res,
                 scratch1 = out(reg) _,
                 scratch2 = out(reg) _,
-                ptr = in(reg) ptr,
+                ptr = in(reg) $ptr.as_ptr(),
                 val = in(reg) $val,
                 options(nostack)
             );
