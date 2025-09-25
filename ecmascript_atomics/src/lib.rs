@@ -387,10 +387,23 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         }
     }
 
+    fn as_ptr(&self) -> RacyPtr<T> {
+        RacyPtr::from_ptr(self.ptr)
+    }
+
     /// Returns the number of elements in the slice.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Return the byte length of the slice.
+    fn byte_length(&self) -> usize {
+        // SAFETY: slice is guaranteed to point to len valid items.
+        unsafe {
+            assert_unchecked(self.len().checked_mul(size_of::<T>()).is_some());
+            self.len.unchecked_mul(size_of::<T>())
+        }
     }
 
     /// Returns `true` if the slice has a length of 0.
@@ -407,7 +420,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     /// middle part will be as big as possible under the given alignment
     /// constraint and element size.
     pub fn align_to<U: Sealed>(self) -> (RacySlice<'a, u8>, RacySlice<'a, U>, RacySlice<'a, u8>) {
-        let byte_length = self.len * core::mem::size_of::<T>();
+        let byte_length = self.byte_length();
         let head_ptr = self.ptr;
         let head_length = self.ptr.align_offset(align_of::<U>()).min(byte_length);
         // SAFETY: does not overflow length.
@@ -506,7 +519,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn load_u16(&self) -> Option<u16> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < 2 {
+        if self.byte_length() < 2 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
@@ -533,7 +546,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn load_u32(&self) -> Option<u32> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < 4 {
+        if self.byte_length() < 4 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
@@ -560,7 +573,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn load_u64(&self) -> Option<u64> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < 8 {
+        if self.byte_length() < 8 {
             return None;
         }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
@@ -627,7 +640,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn store_u16(&self, val: u16) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < 2 {
+        if self.byte_length() < 2 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
@@ -652,7 +665,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn store_u32(&self, val: u32) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < 4 {
+        if self.byte_length() < 4 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
@@ -677,7 +690,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn store_u64(&self, val: u64) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < 8 {
+        if self.byte_length() < 8 {
             return None;
         }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
@@ -733,7 +746,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn as_u16(&self) -> Option<RacyU16<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < size_of::<u16>() || !self.ptr.cast::<u16>().is_aligned() {
+        if self.byte_length() < size_of::<u16>() || !self.ptr.cast::<u16>().is_aligned() {
             None
         } else {
             Some(RacyU16::from_ptr(self.ptr))
@@ -747,7 +760,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn as_u32(&self) -> Option<RacyU32<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < size_of::<u32>() || !self.ptr.cast::<u32>().is_aligned() {
+        if self.byte_length() < size_of::<u32>() || !self.ptr.cast::<u32>().is_aligned() {
             None
         } else {
             Some(RacyU32::from_ptr(self.ptr))
@@ -761,7 +774,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn as_u64(&self) -> Option<RacyU64<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < size_of::<u64>() || !self.ptr.cast::<u64>().is_aligned() {
+        if self.byte_length() < size_of::<u64>() || !self.ptr.cast::<u64>().is_aligned() {
             None
         } else {
             Some(RacyU64::from_ptr(self.ptr))
@@ -775,12 +788,45 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     pub fn as_usize(&self) -> Option<RacyUsize<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
         unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.len() * size_of::<T>() < size_of::<usize>()
-            || !self.ptr.cast::<usize>().is_aligned()
-        {
+        if self.byte_length() < size_of::<usize>() || !self.ptr.cast::<usize>().is_aligned() {
             None
         } else {
             Some(RacyUsize::from_ptr(self.ptr))
+        }
+    }
+
+    /// Copies all elements from `src` into `self`, using a racy memmove or
+    /// memcpy as appropriate.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Examples
+    pub fn copy_from_slice(&self, other: &Self) {
+        #[track_caller]
+        #[cold]
+        const fn len_mismatch_fail() -> ! {
+            panic!("copy_from_slice: source slice length does not match destination slice length")
+        }
+
+        if self.len() != other.len() {
+            len_mismatch_fail();
+        }
+        let count = self.len();
+        // SAFETY: slice is guaranteed to point to len valid elements.
+        if unsafe {
+            self.ptr <= other.ptr && other.ptr < self.ptr.byte_add(self.byte_length())
+                || other.ptr <= self.ptr && self.ptr < other.ptr.byte_add(other.byte_length())
+        } {
+            // Overlapping data.
+            // SAFETY: Count checked to be valid for both.
+            unsafe { unordered_copy(other.as_ptr(), self.as_ptr(), count) };
+        } else {
+            // SAFETY: Count checked to be valid for both.
+            unsafe { unordered_copy_nonoverlapping(other.as_ptr(), self.as_ptr(), count) };
         }
     }
 }
@@ -829,6 +875,7 @@ impl<'a> RacySlice<'a, usize> {
 ///
 /// This is intended for unsafe usage only, where eg. the size of an EMCAScript
 /// memory is stored separately from the pointer.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RacyPtr<T: Sealed>(NonNull<()>, PhantomData<NonNull<UnsafeCell<T>>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -860,6 +907,7 @@ impl<T: Sealed> RacyPtr<T> {
 
 /// An opaque pointer to a byte of memory implementing the ECMAScript atomic
 /// memory model.
+#[derive(Clone, Copy)]
 pub struct RacyU8<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u8>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1038,6 +1086,7 @@ impl RacyU8<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct RacyU16<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u16>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1216,6 +1265,7 @@ impl RacyU16<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct RacyU32<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u32>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1394,6 +1444,7 @@ impl RacyU32<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct RacyU64<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u64>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1537,6 +1588,7 @@ impl RacyU64<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct RacyUsize<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<usize>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1789,8 +1841,8 @@ impl RacyUsize<'_> {
     }
 }
 
-/// Copies `count` bytes from `src` to `dst`. The source
-/// and destination must *not* overlap.
+/// Copies `count` elements from `src` to `dst`. The source and destination
+/// must *not* overlap.
 ///
 /// For regions of memory which might overlap, use [`unordered_copy`] instead.
 ///
@@ -1804,22 +1856,28 @@ impl RacyUsize<'_> {
 ///
 /// Behavior is undefined if any of the following conditions are violated:
 ///
-/// * `src` must be [valid] for reads of `count` bytes.
+/// * `src` must be [valid] for reads of `count` elements.
 ///
-/// * `dst` must be [valid] for writes of `count` bytes.
+/// * `dst` must be [valid] for writes of `count` elements.
 ///
 /// * Both `src` and `dst` must be properly aligned.
 ///
-/// * The region of memory beginning at `src` with a size of `count` bytes must
-///   *not* overlap with the region of memory beginning at `dst` with the same
-///   size.
+/// * The region of memory beginning at `src` with a size of `count` elements
+///   must *not* overlap with the region of memory beginning at `dst` with the
+///   same size.
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
-pub unsafe fn unordered_copy_nonoverlapping(src: RacyU8, dst: RacyU8, count: usize) {
+#[inline]
+pub unsafe fn unordered_copy_nonoverlapping<T: Sealed>(
+    src: RacyPtr<T>,
+    dst: RacyPtr<T>,
+    count: usize,
+) {
+    let count = count * size_of::<T>();
     unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
 }
 
-/// Copies `count` bytes from `src` to `dst`. The source and destination may
+/// Copies `count` elements from `src` to `dst`. The source and destination may
 /// overlap.
 ///
 /// If the source and destination will *never* overlap,
@@ -1827,8 +1885,8 @@ pub unsafe fn unordered_copy_nonoverlapping(src: RacyU8, dst: RacyU8, count: usi
 ///
 /// `unordered_copy` is semantically equivalent to C's [`memmove`], but with
 /// the source and destination arguments swapped, and with data races allowed.
-/// Copying takes place as if the bytes were copied from `src` to a temporary
-/// array and then copied from the array to `dst`.
+/// Copying takes place as if the elements were copied from `src` to a
+/// temporary array and then copied from the array to `dst`.
 ///
 /// [`memmove`]: https://en.cppreference.com/w/c/string/byte/memmove
 ///
@@ -1836,538 +1894,20 @@ pub unsafe fn unordered_copy_nonoverlapping(src: RacyU8, dst: RacyU8, count: usi
 ///
 /// Behavior is undefined if any of the following conditions are violated:
 ///
-/// * `src` must be [valid] for reads of `count` bytes.
+/// * `src` must be [valid] for reads of `count` elements.
 ///
-/// * `dst` must be [valid] for writes of `count` bytes, and must remain valid even
-///   when `src` is read for `count` bytes. (This means if the memory ranges
-///   overlap, the `dst` pointer must not be invalidated by `src` reads.)
+/// * `dst` must be [valid] for writes of `count` elements, and must remain
+///   valid even when `src` is read for `count` elements. (This means if the
+///   memory ranges overlap, the `dst` pointer must not be invalidated by
+///   `src` reads.)
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
-pub unsafe fn unordered_copy(src: RacyU8, dst: RacyU8, count: usize) {
+#[inline]
+pub unsafe fn unordered_copy<T: Sealed>(src: RacyPtr<T>, dst: RacyPtr<T>, count: usize) {
+    let count = count * size_of::<T>();
     if dst.as_ptr() <= src.as_ptr() {
         unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
     } else {
         unsafe { unordered_memcpy_up_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::ptr::NonNull;
-
-    use crate::*;
-
-    #[test]
-    fn test_load() {
-        let dst = NonNull::from(Box::leak(Box::new([u64::MAX; 1]))).cast::<()>();
-
-        assert_eq!(atomic_load_8_unsynchronized(dst), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_16_unsynchronized(dst), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_32_unsynchronized(dst), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_64_unsynchronized(dst), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_8_seq_cst(dst), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_16_seq_cst(dst), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_32_seq_cst(dst), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        assert_eq!(atomic_load_64_seq_cst(dst), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_store() {
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        atomic_store_8_unsynchronized(dst, u8::MAX);
-        assert_eq!(atomic_load_8_unsynchronized(dst), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u8::MAX as u64);
-
-        atomic_store_16_unsynchronized(dst, u16::MAX);
-        assert_eq!(atomic_load_16_unsynchronized(dst), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u16::MAX as u64);
-
-        atomic_store_32_unsynchronized(dst, u32::MAX);
-        assert_eq!(atomic_load_32_unsynchronized(dst), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u32::MAX as u64);
-
-        atomic_store_64_unsynchronized(dst, u64::MAX);
-        assert_eq!(atomic_load_64_unsynchronized(dst), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        atomic_store_64_unsynchronized(dst, 0x0);
-        assert_eq!(atomic_load_64_unsynchronized(dst), 0x0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0x0);
-
-        atomic_store_8_seq_cst(dst, u8::MAX);
-        assert_eq!(atomic_load_8_seq_cst(dst), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u8::MAX as u64);
-
-        atomic_store_16_seq_cst(dst, u16::MAX);
-        assert_eq!(atomic_load_16_seq_cst(dst), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u16::MAX as u64);
-
-        atomic_store_32_seq_cst(dst, u32::MAX);
-        assert_eq!(atomic_load_32_seq_cst(dst), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u32::MAX as u64);
-
-        atomic_store_64_seq_cst(dst, u64::MAX);
-        assert_eq!(atomic_load_64_seq_cst(dst), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_exchange() {
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        assert_eq!(atomic_exchange_8_seq_cst(dst, u8::MAX), 0, "u8 initial");
-        assert_eq!(atomic_exchange_8_seq_cst(dst, 0), u8::MAX, "u8 subsequent");
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_exchange_16_seq_cst(dst, u16::MAX), 0, "u16 initial");
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u16::MAX as u64);
-        assert_eq!(
-            atomic_exchange_16_seq_cst(dst, 0),
-            u16::MAX,
-            "u16 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_exchange_32_seq_cst(dst, u32::MAX), 0, "u32 initial");
-        assert_eq!(
-            atomic_exchange_32_seq_cst(dst, 0),
-            u32::MAX,
-            "u32 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_exchange_64_seq_cst(dst, u64::MAX), 0, "u64 initial");
-        assert_eq!(
-            atomic_exchange_64_seq_cst(dst, 0),
-            u64::MAX,
-            "u64 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_compare_exchange() {
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        assert_eq!(
-            atomic_cmp_xchg_8_seq_cst(dst, u8::MAX, u8::MAX),
-            0,
-            "u8 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        assert_eq!(atomic_cmp_xchg_8_seq_cst(dst, 0, u8::MAX), 0, "u8 initial");
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u8::MAX as u64);
-        assert_eq!(
-            atomic_cmp_xchg_8_seq_cst(dst, 0, 0),
-            u8::MAX,
-            "u8 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u8::MAX as u64);
-        assert_eq!(
-            atomic_cmp_xchg_8_seq_cst(dst, u8::MAX, 0),
-            u8::MAX,
-            "u8 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(
-            atomic_cmp_xchg_16_seq_cst(dst, u16::MAX, u16::MAX),
-            0,
-            "u16 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        assert_eq!(
-            atomic_cmp_xchg_16_seq_cst(dst, 0, u16::MAX),
-            0,
-            "u16 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u16::MAX as u64);
-        assert_eq!(
-            atomic_cmp_xchg_16_seq_cst(dst, 0, 0),
-            u16::MAX,
-            "u16 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u16::MAX as u64);
-        assert_eq!(
-            atomic_cmp_xchg_16_seq_cst(dst, u16::MAX, 0),
-            u16::MAX,
-            "u16 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(
-            atomic_cmp_xchg_32_seq_cst(dst, u32::MAX, u32::MAX),
-            0,
-            "u32 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        assert_eq!(
-            atomic_cmp_xchg_32_seq_cst(dst, 0, u32::MAX),
-            0,
-            "u32 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u32::MAX as u64);
-        assert_eq!(
-            atomic_cmp_xchg_32_seq_cst(dst, 0, 0),
-            u32::MAX,
-            "u32 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u32::MAX as u64);
-        assert_eq!(
-            atomic_cmp_xchg_32_seq_cst(dst, u32::MAX, 0),
-            u32::MAX,
-            "u32 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(
-            atomic_cmp_xchg_64_seq_cst(dst, u64::MAX, u64::MAX),
-            0,
-            "u64 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        assert_eq!(
-            atomic_cmp_xchg_64_seq_cst(dst, 0, u64::MAX),
-            0,
-            "u64 initial"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(
-            atomic_cmp_xchg_64_seq_cst(dst, 0, 0),
-            u64::MAX,
-            "u64 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(
-            atomic_cmp_xchg_64_seq_cst(dst, u64::MAX, 0),
-            u64::MAX,
-            "u64 subsequent"
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_add() {
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        assert_eq!(atomic_add_8_seq_cst(dst, u8::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u8::MAX as u64);
-        assert_eq!(atomic_add_8_seq_cst(dst, 1), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_add_16_seq_cst(dst, u16::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u16::MAX as u64);
-        assert_eq!(atomic_add_16_seq_cst(dst, 1), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_add_32_seq_cst(dst, u32::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u32::MAX as u64);
-        assert_eq!(atomic_add_32_seq_cst(dst, 1), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_add_64_seq_cst(dst, u64::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(atomic_add_64_seq_cst(dst, 1), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_and() {
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        assert_eq!(atomic_and_8_seq_cst(dst, u8::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        atomic_store_64_unsynchronized(dst, u64::MAX);
-        assert_eq!(atomic_and_8_seq_cst(dst, u8::MAX), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(atomic_and_8_seq_cst(dst, 0xF0), u8::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX - 0xF);
-        assert_eq!(atomic_and_8_seq_cst(dst, 0), 0xF0);
-        assert_eq!(
-            unsafe { dst.cast::<u64>().read() },
-            u64::MAX - u8::MAX as u64
-        );
-        unsafe {
-            dst.cast::<u64>().write(0);
-        }
-
-        assert_eq!(atomic_and_16_seq_cst(dst, u16::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        atomic_store_64_unsynchronized(dst, u64::MAX);
-        assert_eq!(atomic_and_16_seq_cst(dst, u16::MAX), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(atomic_and_16_seq_cst(dst, 0xFF00), u16::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX - 0xFF);
-        assert_eq!(atomic_and_16_seq_cst(dst, 0), 0xFF00);
-        assert_eq!(
-            unsafe { dst.cast::<u64>().read() },
-            u64::MAX - u16::MAX as u64
-        );
-        unsafe {
-            dst.cast::<u64>().write(0);
-        }
-
-        assert_eq!(atomic_and_32_seq_cst(dst, u32::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        atomic_store_64_unsynchronized(dst, u64::MAX);
-        assert_eq!(atomic_and_32_seq_cst(dst, u32::MAX), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(atomic_and_32_seq_cst(dst, 0xFFFF_0000), u32::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX - 0xFFFF);
-        assert_eq!(atomic_and_32_seq_cst(dst, 0), 0xFFFF_0000);
-        assert_eq!(
-            unsafe { dst.cast::<u64>().read() },
-            u64::MAX - u32::MAX as u64
-        );
-        unsafe {
-            dst.cast::<u64>().write(0);
-        }
-
-        assert_eq!(atomic_and_64_seq_cst(dst, u64::MAX), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-        atomic_store_64_unsynchronized(dst, u64::MAX);
-        assert_eq!(atomic_and_64_seq_cst(dst, u64::MAX), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, u64::MAX);
-        assert_eq!(atomic_and_64_seq_cst(dst, 0xFFFF_0000_FFFF_0000), u64::MAX);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF_0000_FFFF_0000);
-        assert_eq!(
-            atomic_and_64_seq_cst(dst, 0x0_FFFF_0000_FFFF),
-            0xFFFF_0000_FFFF_0000
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_or() {
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        assert_eq!(atomic_or_8_seq_cst(dst, 0x73), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0x73);
-        assert_eq!(atomic_or_8_seq_cst(dst, 0x1B), 0x73);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0x7B);
-        assert_eq!(atomic_or_8_seq_cst(dst, 0xF0), 0x7B);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFB);
-        assert_eq!(atomic_or_8_seq_cst(dst, 0x00), 0xFB);
-        assert_eq!(atomic_or_8_seq_cst(dst, 0xFF), 0xFB);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFF);
-        unsafe {
-            dst.cast::<u64>().write(0);
-        }
-
-        assert_eq!(atomic_or_16_seq_cst(dst, 0xB182), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xB182);
-        assert_eq!(atomic_or_16_seq_cst(dst, 0x02C3), 0xB182);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xB3C3);
-        assert_eq!(atomic_or_16_seq_cst(dst, 0xFF00), 0xB3C3);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFC3);
-        assert_eq!(atomic_or_16_seq_cst(dst, 0), 0xFFC3);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFC3);
-        assert_eq!(atomic_or_16_seq_cst(dst, 0x00FF), 0xFFC3);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF);
-        assert_eq!(atomic_or_16_seq_cst(dst, 0), 0xFFFF);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF);
-        unsafe {
-            dst.cast::<u64>().write(0);
-        }
-
-        assert_eq!(atomic_or_32_seq_cst(dst, 0x01A4_1005), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0x01A4_1005);
-        assert_eq!(atomic_or_32_seq_cst(dst, 0x5502_D581), 0x01A4_1005);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0x55A6_D585);
-        assert_eq!(atomic_or_32_seq_cst(dst, 0xFF00_FF00), 0x55A6_D585);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFA6_FF85);
-        assert_eq!(atomic_or_32_seq_cst(dst, 0), 0xFFA6_FF85);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFA6_FF85);
-        assert_eq!(atomic_or_32_seq_cst(dst, 0x00FF_00FF), 0xFFA6_FF85);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF_FFFF);
-        unsafe {
-            dst.cast::<u64>().write(0);
-        }
-
-        assert_eq!(atomic_or_64_seq_cst(dst, 0xABCD_3456_01A4_1005), 0);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xABCD_3456_01A4_1005);
-        assert_eq!(
-            atomic_or_64_seq_cst(dst, 0x0F25_0021_232B_C34A),
-            0xABCD_3456_01A4_1005
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xAFED_3477_23AF_D34F);
-        assert_eq!(
-            atomic_or_64_seq_cst(dst, 0xFF00_FF00_FF00_FF00),
-            0xAFED_3477_23AF_D34F
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFED_FF77_FFAF_FF4F);
-        assert_eq!(atomic_or_64_seq_cst(dst, 0), 0xFFED_FF77_FFAF_FF4F);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFED_FF77_FFAF_FF4F);
-        assert_eq!(
-            atomic_or_64_seq_cst(dst, 0x00FF_00FF_00FF_00FF),
-            0xFFED_FF77_FFAF_FF4F
-        );
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF_FFFF_FFFF_FFFF);
-
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_xor() {
-        let foo = NonNull::from(Box::leak(Box::new([0u64; 1]))).cast::<()>();
-
-        assert_eq!(atomic_xor_8_seq_cst(foo, 0x73), 0);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x73);
-        assert_eq!(atomic_xor_8_seq_cst(foo, 0x1B), 0x73);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x68);
-        assert_eq!(atomic_xor_8_seq_cst(foo, 0xF0), 0x68);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x98);
-        assert_eq!(atomic_xor_8_seq_cst(foo, 0x00), 0x98);
-        assert_eq!(atomic_xor_8_seq_cst(foo, 0xFF), 0x98);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x67);
-        assert_eq!(atomic_xor_8_seq_cst(foo, 0x67), 0x67);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0xB182), 0);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xB182);
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0x02C3), 0xB182);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xB341);
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0xFF00), 0xB341);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x4C41);
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0), 0x4C41);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x4C41);
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0x00FF), 0x4C41);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x4CBE);
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0xFFFF), 0x4CBE);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xB341);
-        assert_eq!(atomic_xor_16_seq_cst(foo, 0xB341), 0xB341);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0xA34B_B182), 0);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xA34B_B182);
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0x86D0_02C3), 0xA34B_B182);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x259B_B341);
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0xFF00_FF00), 0x259B_B341);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xDA9B_4C41);
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0), 0xDA9B_4C41);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xDA9B_4C41);
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0x00FF_00FF), 0xDA9B_4C41);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xDA64_4CBE);
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0xFFFF_FFFF), 0xDA64_4CBE);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x259B_B341);
-        assert_eq!(atomic_xor_32_seq_cst(foo, 0x259B_B341), 0x259B_B341);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0);
-
-        assert_eq!(atomic_xor_64_seq_cst(foo, 0x0567_98E0_A34B_B182), 0);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x0567_98E0_A34B_B182);
-        assert_eq!(
-            atomic_xor_64_seq_cst(foo, 0x1135_C732_86D0_02C3),
-            0x0567_98E0_A34B_B182
-        );
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x1452_5FD2_259B_B341);
-        assert_eq!(
-            atomic_xor_64_seq_cst(foo, 0xFF00_FF00_FF00_FF00),
-            0x1452_5FD2_259B_B341
-        );
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xEB52_A0D2_DA9B_4C41);
-        assert_eq!(atomic_xor_64_seq_cst(foo, 0), 0xEB52_A0D2_DA9B_4C41);
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xEB52_A0D2_DA9B_4C41);
-        assert_eq!(
-            atomic_xor_64_seq_cst(foo, 0x00FF_00FF_00FF_00FF),
-            0xEB52_A0D2_DA9B_4C41
-        );
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0xEBAD_A02D_DA64_4CBE);
-        assert_eq!(
-            atomic_xor_64_seq_cst(foo, 0xFFFF_FFFF_FFFF_FFFF),
-            0xEBAD_A02D_DA64_4CBE
-        );
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0x1452_5FD2_259B_B341);
-        assert_eq!(
-            atomic_xor_64_seq_cst(foo, 0x1452_5FD2_259B_B341),
-            0x1452_5FD2_259B_B341
-        );
-        assert_eq!(unsafe { foo.cast::<u64>().read() }, 0);
-
-        let _ = unsafe { Box::from_raw(foo.cast::<u64>().as_ptr()) };
-    }
-
-    #[test]
-    fn test_copy() {
-        let src = NonNull::from(Box::leak(Box::new([0u64; 16]))).cast::<()>();
-        let dst = NonNull::from(Box::leak(Box::new([0u64; 16]))).cast::<()>();
-
-        unsafe { src.cast::<u64>().write(0xFFFF_FFFF_FFFF_FFFF) };
-        atomic_copy8_unsynchronized(src, dst);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFF);
-        atomic_copy16_unsynchronized(src, dst);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF);
-        atomic_copy32_unsynchronized(src, dst);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF_FFFF);
-        atomic_copy_word_unsynchronized(src, dst);
-        assert_eq!(unsafe { dst.cast::<u64>().read() }, 0xFFFF_FFFF_FFFF_FFFF);
-
-        unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xF0F0_F0F0_F0F0_F0F0) };
-        atomic_copy_block_down_unsynchronized(src, dst);
-        assert_eq!(
-            unsafe { src.cast::<[u8; usize::BITS as usize]>().read() },
-            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
-        );
-        unsafe { src.cast::<[u64; 16]>().as_mut().fill(0x0F0F_0F0F_0F0F_0F0F) };
-        atomic_copy_block_up_unsynchronized(src, dst);
-        assert_eq!(
-            unsafe { src.cast::<[u8; usize::BITS as usize]>().read() },
-            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
-        );
-        unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xABCD_EF01_2345_6789) };
-        atomic_copy_unaligned_block_down_unsynchronized(unsafe { src.byte_add(1) }, dst);
-        assert_eq!(
-            unsafe { src.byte_add(1).cast::<[u8; usize::BITS as usize]>().read() },
-            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
-        );
-        unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xBCDE_F012_3456_789A) };
-        atomic_copy_unaligned_block_up_unsynchronized(unsafe { src.byte_add(3) }, dst);
-        assert_eq!(
-            unsafe { src.byte_add(3).cast::<[u8; usize::BITS as usize]>().read() },
-            unsafe { dst.cast::<[u8; usize::BITS as usize]>().read() },
-        );
-        unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xCDEF_0123_4567_89AB) };
-        unsafe { dst.cast::<[u64; 16]>().as_mut().fill(0) };
-        atomic_copy_unaligned_word_up_unsynchronized(unsafe { src.byte_add(5) }, dst);
-        assert_eq!(
-            unsafe { src.byte_add(5).cast::<[u8; size_of::<usize>()]>().read() },
-            unsafe { dst.cast::<[u8; size_of::<usize>()]>().read() },
-        );
-        unsafe { src.cast::<[u64; 16]>().as_mut().fill(0xDEF0_1234_5678_9ABC) };
-        atomic_copy_unaligned_word_down_unsynchronized(unsafe { src.byte_add(7) }, dst);
-        assert_eq!(
-            unsafe { src.byte_add(7).cast::<[u8; size_of::<usize>()]>().read() },
-            unsafe { dst.cast::<[u8; size_of::<usize>()]>().read() },
-        );
-
-        let _ = unsafe { Box::from_raw(src.cast::<u64>().as_ptr()) };
-        let _ = unsafe { Box::from_raw(dst.cast::<u64>().as_ptr()) };
     }
 }

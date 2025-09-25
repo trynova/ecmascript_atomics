@@ -3,10 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #![no_main]
-use ecmascript_atomics::{
-    Ordering, RacyMutSlice, RacySlice, RacyU8, RacyU16, RacyU32, RacyU64, unordered_copy,
-    unordered_copy_nonoverlapping,
-};
+use ecmascript_atomics::{Ordering, RacyMutSlice, RacySlice, RacyU8, RacyU16, RacyU32, RacyU64};
 use std::{
     hint::assert_unchecked,
     ops::{BitAnd, BitOr, BitXor},
@@ -678,28 +675,12 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                 }
                 rust_mem.copy_within(src_byte_offset..src_byte_offset + len, dst_byte_offset);
 
+                let rust_len = rust_mem[src_byte_offset..src_byte_offset + len].len();
+
                 let ecmascript_src = ecmascript_mem.slice(src_byte_offset, src_byte_offset + len);
+                assert_eq!(rust_len, ecmascript_src.len());
                 let ecmascript_dst = ecmascript_mem.slice(dst_byte_offset, dst_byte_offset + len);
-                if (src_byte_offset..src_byte_offset + len).contains(&dst_byte_offset)
-                    || (dst_byte_offset..dst_byte_offset + len).contains(&src_byte_offset)
-                {
-                    // Overlapping.
-                    unsafe {
-                        unordered_copy(
-                            ecmascript_src.as_u8().unwrap(),
-                            ecmascript_dst.as_u8().unwrap(),
-                            len,
-                        )
-                    };
-                } else {
-                    unsafe {
-                        unordered_copy_nonoverlapping(
-                            ecmascript_src.as_u8().unwrap(),
-                            ecmascript_dst.as_u8().unwrap(),
-                            len,
-                        );
-                    }
-                }
+                ecmascript_dst.copy_from_slice(&ecmascript_src);
             }
         }
     }

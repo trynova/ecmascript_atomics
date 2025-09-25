@@ -36,6 +36,7 @@ fn can_align_to<const ALIGNMENT: usize>(src: NonNull<()>, dst: NonNull<()>) -> b
 const BLOCK_MASK: usize = BLOCK_SIZE - 1;
 const WORD_MASK: usize = WORD_SIZE - 1;
 
+#[inline(always)]
 pub(crate) unsafe fn unordered_memcpy_down_unsynchronized(
     mut src: NonNull<()>,
     mut dst: NonNull<()>,
@@ -99,6 +100,7 @@ pub(crate) unsafe fn unordered_memcpy_down_unsynchronized(
     atomic_copy_down_no_tear_if_aligned_unsynchronized(src, dst, lim);
 }
 
+#[inline(always)]
 pub(crate) unsafe fn unordered_memcpy_up_unsynchronized(
     mut src: NonNull<()>,
     mut dst: NonNull<()>,
