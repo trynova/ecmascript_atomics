@@ -173,17 +173,18 @@ pub fn atomic_pause() {
 ///
 /// [`enter`]: crate::RacyMemory::enter
 /// [`exit`]: crate::RacyMemory::exit
-pub struct RacyMemory {
+pub struct RacyMemory<T: Sealed> {
     ptr: NonNull<()>,
     len: usize,
+    __marker: PhantomData<T>,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyMemory {}
+unsafe impl<T: Sealed> Send for RacyMemory<T> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyMemory {}
+unsafe impl<T: Sealed> Sync for RacyMemory<T> {}
 
-impl RacyMemory {
+impl<T: Sealed> RacyMemory<T> {
     /// Move a memory allocation into the ECMAScript memory model.
     ///
     /// # Safety
@@ -198,7 +199,7 @@ impl RacyMemory {
     /// read from or write into the memory, including with atomic operations.
     #[inline]
     #[must_use]
-    pub unsafe fn enter(ptr: NonNull<u8>, len: usize) -> Self {
+    pub unsafe fn enter(ptr: NonNull<u8>, len: usize) -> RacyMemory<u8> {
         let mut ptr = ptr.as_ptr();
         // SAFETY: noop.
         unsafe {
@@ -211,10 +212,52 @@ impl RacyMemory {
                 options(nostack, preserves_flags)
             )
         }
-        Self {
+        RacyMemory {
             // SAFETY: Magic spell always returns non-null pointers.
             ptr: unsafe { NonNull::new_unchecked(ptr.cast()) },
             len,
+            __marker: PhantomData,
+        }
+    }
+
+    /// Move a typed memory allocation into the ECMAScript memory model.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid, uniquely owned `T`.
+    ///
+    /// # Soudness
+    ///
+    /// See [`enter`] for details.
+    ///
+    /// [`enter`]: crate::RacyMemory::enter
+    pub unsafe fn enter_ptr(ptr: NonNull<T>) -> Self {
+        let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>()) };
+        Self {
+            ptr,
+            len: 1,
+            __marker: PhantomData,
+        }
+    }
+
+    /// Move a typed memory allocation slice into the ECMAScript memory model.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid, uniquely owned `T`.
+    ///
+    /// # Soudness
+    ///
+    /// See [`enter`] for details.
+    ///
+    /// [`enter`]: crate::RacyMemory::enter
+    pub unsafe fn enter_slice(ptr: NonNull<[T]>) -> Self {
+        let len = ptr.len();
+        let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>() * len) };
+        Self {
+            ptr,
+            len,
+            __marker: PhantomData,
         }
     }
 
@@ -234,7 +277,7 @@ impl RacyMemory {
     /// is allowed to perform this call.
     #[inline]
     #[must_use]
-    pub unsafe fn exit(self) -> (NonNull<u8>, usize) {
+    pub unsafe fn exit(self) -> (NonNull<T>, usize) {
         let mut ptr = self.ptr.as_ptr();
         // SAFETY: noop.
         unsafe {
@@ -252,7 +295,7 @@ impl RacyMemory {
     }
 
     /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacySlice<'_, u8> {
+    pub fn as_slice(&self) -> RacySlice<'_, T> {
         RacySlice {
             ptr: self.ptr,
             len: self.len,
@@ -270,82 +313,6 @@ impl Sealed for u16 {}
 impl Sealed for u32 {}
 impl Sealed for u64 {}
 impl Sealed for usize {}
-
-/// Opaque handle to an exclusively held slice of memory with the ECMAScript
-/// Atomics memory model.
-///
-/// # Soundness
-///
-/// The memory behind this handle is not and must not be read as Rust memory.
-/// Any Rust reads or writes into the memory are undefined behaviour.
-pub struct RacyMutSlice<'a, T: Sealed> {
-    ptr: NonNull<()>,
-    len: usize,
-    __marker: PhantomData<&'a mut UnsafeCell<T>>,
-}
-
-impl<T: Sealed> Drop for RacyMutSlice<'_, T> {
-    fn drop(&mut self) {
-        // Conceptually deallocate the ECMAScript memory pointed to by the
-        // slice and produce a new Rust memory in its place.
-        let mut ptr = self.ptr.as_ptr();
-        // SAFETY: noop.
-        unsafe {
-            core::arch::asm!(
-                "/* Magic spell: let {} be memory in Rust's eyes! */",
-                // Note: ptr is and out parameter so that the assembly block
-                // can conceptually deallocate the ECMAScript memory, allocate
-                // new Rust memory, and return a pointer to it.
-                inlateout(reg) ptr,
-                options(nostack, preserves_flags)
-            )
-        }
-        // SAFETY: Magic spell always returns non-null pointers.
-        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
-    }
-}
-
-impl<'a, T: Sealed> RacyMutSlice<'a, T> {
-    /// Take ownership of an exclusively owned slice of bytes and produce an
-    /// exclusively owned slice of racy atomic memory.
-    ///
-    /// # Soundness
-    ///
-    /// The memory in the slice is not and must not be read as Rust memory
-    /// while the racy atomic slice exists. Any Rust reads or writes into the
-    /// memory are undefined behaviour.
-    pub fn from_mut_slice(slice: &'a mut [T]) -> Self {
-        // Note: slice pointers are possibly danging but never null.
-        let mut ptr = slice.as_mut_ptr();
-        // SAFETY: noop.
-        unsafe {
-            core::arch::asm!(
-                "/* Magic spell: let {} no longer be memory in Rust's eyes! */",
-                // Note: ptr is and out parameter so that the assembly block
-                // can conceptually deallocate the original ptr, removing its
-                // provenance, and return a new ptr with difference provenance.
-                inlateout(reg) ptr,
-                options(nostack, preserves_flags)
-            )
-        }
-        let len = slice.len();
-        Self {
-            // SAFETY: Magic spell always returns non-null pointers.
-            ptr: unsafe { NonNull::new_unchecked(ptr.cast()) },
-            len,
-            __marker: PhantomData,
-        }
-    }
-
-    /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacySlice<'_, T> {
-        RacySlice {
-            ptr: self.ptr,
-            len: self.len,
-            __marker: PhantomData,
-        }
-    }
-}
 
 /// Opaque handle to a slice of memory with the ECMAScript Atomics memory
 /// model.
@@ -438,6 +405,16 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         );
         // SAFETY: cannot overflow len as body_length is derived from len.
         let tail_ptr = unsafe { body_ptr.byte_add(body_length * size_of::<U>()) };
+        if const { align_of::<U>() <= align_of::<T>() } {
+            // SAFETY: optimisation check.
+            unsafe {
+                assert_unchecked(
+                    head_length == 0
+                        && tail_length == 0
+                        && body_length == byte_length / size_of::<U>(),
+                );
+            };
+        }
         (
             RacySlice {
                 ptr: head_ptr,
@@ -455,6 +432,13 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
                 __marker: PhantomData,
             },
         )
+    }
+
+    /// Transmutes the the racy memory slice to a slice of racy bytes.
+    #[inline(always)]
+    pub fn to_bytes(self) -> RacySlice<'a, u8> {
+        // SAFETY: Totally safe here.
+        unsafe { RacySlice::from_raw_parts(self.as_ptr().cast(), self.byte_length()) }
     }
 
     /// Create a slice of racy atomic memory starting at the given offset.
@@ -798,6 +782,53 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         }
     }
 
+    /// Copies all elements from `src` into `self` using a racy atomic memcpy.
+    /// Note that the source slice uses the Rust memory model and this method
+    /// abides by that: the source slice is only read from and no data races
+    /// in the source memory are possible through the use of this function.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    pub fn copy_from_slice(&self, src: &[T]) {
+        if self.len() != src.len() {
+            len_mismatch_fail();
+        }
+        let count = self.len();
+        // SAFETY: slice pointers are always non-null.
+        let src = unsafe { NonNull::new_unchecked(src.as_ptr().cast_mut()) };
+        let dst: NonNull<T> = self.as_ptr().as_ptr().cast();
+        // SAFETY: lengths are checked to match, and racy slice cannot overlap
+        // with a Rust slice.
+        unsafe { unordered_copy_nonoverlapping(src, dst, count) };
+    }
+
+    /// Copies all elements from `self` into `dst`, using a racy atomic memcpy.
+    /// Note that the target slice uses the Rust memory model and this method
+    /// abides by that: the target slice is held exclusively during the writing
+    /// and thus no data races in the target memory are possible through the
+    /// use of this function.
+    ///
+    /// The length of `dst` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    pub fn copy_into_slice(&self, dst: &mut [T]) {
+        if self.len() != dst.len() {
+            len_mismatch_fail();
+        }
+        let count = self.len();
+        let src: NonNull<T> = self.as_ptr().as_ptr().cast();
+        // SAFETY: slice pointers are always non-null.
+        let dst = unsafe { NonNull::new_unchecked(dst.as_ptr().cast_mut()) };
+        // SAFETY: lengths are checked to match, and racy slice cannot overlap
+        // with a Rust slice.
+        unsafe { unordered_copy_nonoverlapping(src, dst, count) };
+    }
+
     /// Copies all elements from `src` into `self`, using a racy memmove or
     /// memcpy as appropriate.
     ///
@@ -806,15 +837,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     /// # Panics
     ///
     /// This function will panic if the two slices have different lengths.
-    ///
-    /// # Examples
-    pub fn copy_from_slice(&self, other: &Self) {
-        #[track_caller]
-        #[cold]
-        const fn len_mismatch_fail() -> ! {
-            panic!("copy_from_slice: source slice length does not match destination slice length")
-        }
-
+    pub fn copy_from_racy_slice(&self, other: &Self) {
         if self.len() != other.len() {
             len_mismatch_fail();
         }
@@ -828,10 +851,18 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
             // SAFETY: Count checked to be valid for both.
             unsafe { unordered_copy(other.as_ptr(), self.as_ptr(), count) };
         } else {
+            let dst: NonNull<T> = self.as_ptr().as_ptr().cast();
+            let src: NonNull<T> = other.as_ptr().as_ptr().cast();
             // SAFETY: Count checked to be valid for both.
-            unsafe { unordered_copy_nonoverlapping(other.as_ptr(), self.as_ptr(), count) };
+            unsafe { unordered_copy_nonoverlapping(src, dst, count) };
         }
     }
+}
+
+#[track_caller]
+#[cold]
+const fn len_mismatch_fail() -> ! {
+    panic!("copy_from_slice: source slice length does not match destination slice length")
 }
 
 impl<'a> RacySlice<'a, u8> {
@@ -1871,13 +1902,9 @@ impl RacyUsize<'_> {
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
 #[inline]
-pub unsafe fn unordered_copy_nonoverlapping<T: Sealed>(
-    src: RacyPtr<T>,
-    dst: RacyPtr<T>,
-    count: usize,
-) {
+unsafe fn unordered_copy_nonoverlapping<T: Sealed>(src: NonNull<T>, dst: NonNull<T>, count: usize) {
     let count = count * size_of::<T>();
-    unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
+    unsafe { unordered_memcpy_down_unsynchronized(src.cast(), dst.cast(), count) };
 }
 
 /// Copies `count` elements from `src` to `dst`. The source and destination may
@@ -1897,16 +1924,18 @@ pub unsafe fn unordered_copy_nonoverlapping<T: Sealed>(
 ///
 /// Behavior is undefined if any of the following conditions are violated:
 ///
-/// * `src` must be [valid] for reads of `count` elements.
+/// * `src` must be [valid] for reads of `count` elements, OR it must be an
+///    opaque racy handle into a racy slice of `count` elements.
 ///
 /// * `dst` must be [valid] for writes of `count` elements, and must remain
-///   valid even when `src` is read for `count` elements. (This means if the
+///   valid even when `src` is read for `count` elements (this means if the
 ///   memory ranges overlap, the `dst` pointer must not be invalidated by
-///   `src` reads.)
+///   `src` reads), OR it must be an opaque racy handle into a racy slice of
+///   `count` elements.
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
 #[inline]
-pub unsafe fn unordered_copy<T: Sealed>(src: RacyPtr<T>, dst: RacyPtr<T>, count: usize) {
+unsafe fn unordered_copy<T: Sealed>(src: RacyPtr<T>, dst: RacyPtr<T>, count: usize) {
     let count = count * size_of::<T>();
     if dst.as_ptr() <= src.as_ptr() {
         unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };

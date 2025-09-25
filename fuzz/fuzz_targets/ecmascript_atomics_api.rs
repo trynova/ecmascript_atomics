@@ -3,10 +3,11 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #![no_main]
-use ecmascript_atomics::{Ordering, RacyMutSlice, RacySlice, RacyU8, RacyU16, RacyU32, RacyU64};
+use ecmascript_atomics::{Ordering, RacyMemory, RacySlice, RacyU8, RacyU16, RacyU32, RacyU64};
 use std::{
     hint::assert_unchecked,
     ops::{BitAnd, BitOr, BitXor},
+    ptr::NonNull,
     sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64},
 };
 
@@ -680,7 +681,7 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                 let ecmascript_src = ecmascript_mem.slice(src_byte_offset, src_byte_offset + len);
                 assert_eq!(rust_len, ecmascript_src.len());
                 let ecmascript_dst = ecmascript_mem.slice(dst_byte_offset, dst_byte_offset + len);
-                ecmascript_dst.copy_from_slice(&ecmascript_src);
+                ecmascript_dst.copy_from_racy_slice(&ecmascript_src);
             }
         }
     }
@@ -702,13 +703,15 @@ fuzz_target!(|input: AtomicsFuzzInput| {
     let (head, rust_dst, tail) = unsafe { rust_dst.align_to_mut::<u8>() };
     assert!(head.is_empty() && rust_dst.len() == ARENA_SIZE && tail.is_empty());
 
-    let mut ecmascript_dst = Box::new([0usize; ARENA_SIZE_IN_WORDS]);
-    // SAFETY: can transmute usize to u8s.
-    let (head, ecmascript_dst, tail) = unsafe { ecmascript_dst.align_to_mut::<u8>() };
-    assert!(head.is_empty() && ecmascript_dst.len() == ARENA_SIZE && tail.is_empty());
-    // SAFETY: Leaked box allocation is valid for reads and writes; length was
-    // checked.
-    let ecmascript_dst = RacyMutSlice::from_mut_slice(ecmascript_dst);
+    let ecmascript_dst = Box::new([0usize; ARENA_SIZE_IN_WORDS]);
+    let ecmascript_dst =
+        unsafe { RacyMemory::enter_slice(NonNull::from(Box::leak(ecmascript_dst))) };
 
-    execute_ops(rust_dst, ecmascript_dst.as_slice(), &input.ops);
+    execute_ops(rust_dst, ecmascript_dst.as_slice().to_bytes(), &input.ops);
+
+    // SAFETY: we are the only referrer to the memory.
+    let (ptr, len) = unsafe { ecmascript_dst.exit() };
+    debug_assert_eq!(len, ARENA_SIZE_IN_WORDS);
+    // SAFETY: Correct type.
+    let _ = unsafe { Box::from_raw(ptr.as_ptr().cast::<[usize; ARENA_SIZE_IN_WORDS]>()) };
 });
