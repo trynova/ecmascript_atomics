@@ -5,6 +5,8 @@
 // Copyright of the originating code is owned by Firefox authors and Mozilla,
 // modifications by Aapo Alasuutari.
 
+#![no_std]
+
 //! # Racy atomic operations
 //!
 //! This library provides atomic operations that match the ECMAScript
@@ -80,8 +82,9 @@
 mod generated;
 mod unordered_copy;
 
-use core::{cell::UnsafeCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
-use std::hint::assert_unchecked;
+use core::{
+    cell::UnsafeCell, hint::assert_unchecked, marker::PhantomData, mem::MaybeUninit, ptr::NonNull,
+};
 
 use generated::*;
 use unordered_copy::*;
