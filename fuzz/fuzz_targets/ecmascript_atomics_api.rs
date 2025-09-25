@@ -124,10 +124,17 @@ fn get_t_mut<T: Copy + Sized>(rust_mem: &mut [u8], offset: usize) -> &mut T {
     &mut body[0]
 }
 
-fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice, ops: &[AtomicsOp]) {
+fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[AtomicsOp]) {
     assert_eq!(rust_mem.len(), ARENA_SIZE);
     assert!(rust_mem.as_ptr().cast::<usize>().is_aligned());
-    assert!(ecmascript_mem.is_aligned::<usize>());
+    assert!(
+        ecmascript_mem
+            .into_raw_parts()
+            .0
+            .as_ptr()
+            .cast::<usize>()
+            .is_aligned()
+    );
     for op in ops {
         match op {
             AtomicsOp::AtomicLoad {

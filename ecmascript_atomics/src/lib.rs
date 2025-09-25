@@ -81,9 +81,12 @@ mod generated;
 mod unordered_copy;
 
 use core::{cell::UnsafeCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+use std::hint::assert_unchecked;
 
 use generated::*;
 use unordered_copy::*;
+
+use crate::private::Sealed;
 
 /// ECMAScript atomic memory orderings
 ///
@@ -231,7 +234,7 @@ impl RacyMemory {
     }
 
     /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacySlice<'_> {
+    pub fn as_slice(&self) -> RacySlice<'_, u8> {
         RacySlice {
             ptr: self.ptr,
             len: self.len,
@@ -240,6 +243,16 @@ impl RacyMemory {
     }
 }
 
+mod private {
+    pub trait Sealed: Copy + core::fmt::Debug {}
+}
+
+impl Sealed for u8 {}
+impl Sealed for u16 {}
+impl Sealed for u32 {}
+impl Sealed for u64 {}
+impl Sealed for usize {}
+
 /// Opaque handle to an exclusively held slice of memory with the ECMAScript
 /// Atomics memory model.
 ///
@@ -247,13 +260,13 @@ impl RacyMemory {
 ///
 /// The memory behind this handle is not and must not be read as Rust memory.
 /// Any Rust reads or writes into the memory are undefined behaviour.
-pub struct RacyMutSlice<'a> {
+pub struct RacyMutSlice<'a, T: Sealed> {
     ptr: NonNull<()>,
     len: usize,
-    __marker: PhantomData<&'a mut UnsafeCell<u8>>,
+    __marker: PhantomData<&'a mut UnsafeCell<T>>,
 }
 
-impl Drop for RacyMutSlice<'_> {
+impl<T: Sealed> Drop for RacyMutSlice<'_, T> {
     fn drop(&mut self) {
         // Conceptually deallocate the ECMAScript memory pointed to by the
         // slice and produce a new Rust memory in its place.
@@ -274,7 +287,7 @@ impl Drop for RacyMutSlice<'_> {
     }
 }
 
-impl<'a> RacyMutSlice<'a> {
+impl<'a, T: Sealed> RacyMutSlice<'a, T> {
     /// Take ownership of an exclusively owned slice of bytes and produce an
     /// exclusively owned slice of racy atomic memory.
     ///
@@ -283,7 +296,7 @@ impl<'a> RacyMutSlice<'a> {
     /// The memory in the slice is not and must not be read as Rust memory
     /// while the racy atomic slice exists. Any Rust reads or writes into the
     /// memory are undefined behaviour.
-    pub fn from_mut_slice(slice: &'a mut [u8]) -> Self {
+    pub fn from_mut_slice(slice: &'a mut [T]) -> Self {
         // Note: slice pointers are possibly danging but never null.
         let mut ptr = slice.as_mut_ptr();
         // SAFETY: noop.
@@ -307,7 +320,7 @@ impl<'a> RacyMutSlice<'a> {
     }
 
     /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacySlice<'_> {
+    pub fn as_slice(&self) -> RacySlice<'_, T> {
         RacySlice {
             ptr: self.ptr,
             len: self.len,
@@ -324,21 +337,21 @@ impl<'a> RacyMutSlice<'a> {
 /// The memory behind this handle is not and must not be read as Rust memory.
 /// Any Rust reads or writes into the memory are undefined behaviour.
 #[derive(Clone, Copy)]
-pub struct RacySlice<'a> {
+pub struct RacySlice<'a, T: Sealed> {
     ptr: NonNull<()>,
     len: usize,
-    __marker: PhantomData<&'a UnsafeCell<u8>>,
+    __marker: PhantomData<&'a UnsafeCell<T>>,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacySlice<'_> {}
+unsafe impl<T: Sealed> Send for RacySlice<'_, T> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacySlice<'_> {}
+unsafe impl<T: Sealed> Sync for RacySlice<'_, T> {}
 
-impl<'a> RacySlice<'a> {
+impl<'a, T: Sealed> RacySlice<'a, T> {
     /// Destructure a racy atomic memory slice into raw parts.
     #[inline(always)]
-    pub fn into_raw_parts(self) -> (RacyPtr, usize) {
+    pub fn into_raw_parts(self) -> (RacyPtr<T>, usize) {
         (RacyPtr::from_ptr(self.ptr), self.len)
     }
 
@@ -348,10 +361,10 @@ impl<'a> RacySlice<'a> {
     /// # Safety
     ///
     /// `ptr` must point to a racy atomic memory with a length of at least
-    /// `len` bytes. See [new] for the soundness requirements of racy atomic
-    /// memory. Note that this function does not "reallocate" the pointed-to memory.
+    /// `len` elements and be properly aligned. Note that this function does
+    /// not "reallocate" the pointed-to memory.
     #[inline(always)]
-    pub unsafe fn from_raw_parts(ptr: RacyPtr, len: usize) -> Self {
+    pub unsafe fn from_raw_parts(ptr: RacyPtr<T>, len: usize) -> Self {
         Self {
             ptr: ptr.0,
             len,
@@ -359,7 +372,7 @@ impl<'a> RacySlice<'a> {
         }
     }
 
-    /// Returns the number of bytes in the slice.
+    /// Returns the number of elements in the slice.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
@@ -371,13 +384,46 @@ impl<'a> RacySlice<'a> {
         self.len == 0
     }
 
-    /// Returns `true` if the slice is correctly aligned for type `T`.
+    /// Transmutes the racy memory slice to a slice of another racy memory
+    /// type, ensuring alignment of the types is maintained.
     ///
-    /// Generally you'll only want to call this with the supported API types
-    /// `u8`, `u16`, `u32`, and `u64`.
-    #[inline(always)]
-    pub fn is_aligned<T>(&self) -> bool {
-        self.ptr.cast::<T>().is_aligned()
+    /// This method splits the slice into three distinct slices: prefix,
+    /// correctly aligned middle slice of a new type, and the suffix slice. The
+    /// middle part will be as big as possible under the given alignment
+    /// constraint and element size.
+    pub fn align_to<U: Sealed>(self) -> (RacySlice<'a, u8>, RacySlice<'a, U>, RacySlice<'a, u8>) {
+        let byte_length = self.len * core::mem::size_of::<T>();
+        let head_ptr = self.ptr;
+        let head_length = self.ptr.align_offset(align_of::<U>()).min(byte_length);
+        // SAFETY: does not overflow length.
+        let body_ptr = unsafe { head_ptr.byte_add(head_length) };
+        let remaining_byte_length = byte_length - head_length;
+        let body_length = remaining_byte_length / size_of::<U>();
+        let tail_length = remaining_byte_length % size_of::<U>();
+        debug_assert_eq!(
+            head_length + body_length * size_of::<U>() + tail_length,
+            byte_length,
+            "align_to produced a collection of slices with different total byte length than original"
+        );
+        // SAFETY: cannot overflow len as body_length is derived from len.
+        let tail_ptr = unsafe { body_ptr.byte_add(body_length * size_of::<U>()) };
+        (
+            RacySlice {
+                ptr: head_ptr,
+                len: head_length,
+                __marker: PhantomData,
+            },
+            RacySlice {
+                ptr: body_ptr,
+                len: body_length,
+                __marker: PhantomData,
+            },
+            RacySlice {
+                ptr: tail_ptr,
+                len: tail_length,
+                __marker: PhantomData,
+            },
+        )
     }
 
     /// Create a slice of racy atomic memory starting at the given offset.
@@ -386,7 +432,7 @@ impl<'a> RacySlice<'a> {
     pub fn slice_from(&self, offset: usize) -> Self {
         Self {
             // SAFETY: cannot overflow len.
-            ptr: unsafe { self.ptr.byte_add(offset.min(self.len)) },
+            ptr: unsafe { self.ptr.byte_add(offset.min(self.len) * size_of::<T>()) },
             len: self.len.saturating_sub(offset),
             __marker: PhantomData,
         }
@@ -414,19 +460,9 @@ impl<'a> RacySlice<'a> {
         let len = end.saturating_sub(start);
         Self {
             // SAFETY: cannot overflow len.
-            ptr: unsafe { self.ptr.byte_add(start) },
+            ptr: unsafe { self.ptr.byte_add(start * size_of::<T>()) },
             len,
             __marker: PhantomData,
-        }
-    }
-
-    /// Check if this slice of racy atomic memory overlaps with another slice.
-    #[inline]
-    pub fn overlaps_with(&self, other: &Self) -> bool {
-        // SAFETY: ptr is guaranteed to point to at least len bytes of valid memory.
-        unsafe {
-            self.ptr <= other.ptr && other.ptr < self.ptr.byte_add(self.len)
-                || other.ptr <= self.ptr && self.ptr < other.ptr.byte_add(other.len)
         }
     }
 
@@ -435,15 +471,12 @@ impl<'a> RacySlice<'a> {
     /// Returns None if the slice is empty.
     #[inline]
     pub fn load_u8(&self) -> Option<u8> {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
         if self.is_empty() {
             return None;
         }
-        let mut scratch = MaybeUninit::<u8>::uninit();
-        let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
-        // SAFETY: stack pointer cannot be zero.
-        atomic_copy8_unsynchronized(self.ptr, dst);
-        // SAFETY: copy has initialised the scratch data.
-        Some(unsafe { scratch.assume_init() })
+        Some(atomic_load_8_unsynchronized(self.ptr))
     }
 
     /// Load a u16 from the start of this slice using Unordered atomic
@@ -456,8 +489,14 @@ impl<'a> RacySlice<'a> {
     /// This load may tear
     #[inline]
     pub fn load_u16(&self) -> Option<u16> {
-        if self.len() < 2 {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < 2 {
             return None;
+        }
+        if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
+            // Always properly aligned.
+            return Some(atomic_load_16_unsynchronized(self.ptr));
         }
         let mut scratch = MaybeUninit::<u16>::uninit();
         let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
@@ -477,8 +516,14 @@ impl<'a> RacySlice<'a> {
     /// This load may tear
     #[inline]
     pub fn load_u32(&self) -> Option<u32> {
-        if self.len() < 4 {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < 4 {
             return None;
+        }
+        if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
+            // Always properly aligned.
+            return Some(atomic_load_32_unsynchronized(self.ptr));
         }
         let mut scratch = MaybeUninit::<u32>::uninit();
         let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
@@ -498,8 +543,15 @@ impl<'a> RacySlice<'a> {
     /// This load may tear
     #[inline]
     pub fn load_u64(&self) -> Option<u64> {
-        if self.len() < 8 {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < 8 {
             return None;
+        }
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+        if const { align_of::<T>() >= align_of::<u64>() } || UNALIGNED_ACCESS_IS_OK {
+            // Always properly aligned.
+            return Some(atomic_load_64_unsynchronized(self.ptr));
         }
         let mut scratch = MaybeUninit::<u64>::uninit();
         let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
@@ -509,18 +561,42 @@ impl<'a> RacySlice<'a> {
         Some(unsafe { scratch.assume_init() })
     }
 
+    /// Load a usize from the start of this slice using Unordered atomic
+    /// ordering. The slice need not be aligned to the type.
+    ///
+    /// Returns None if the slice is smaller than `size_of::<usize>()` bytes.
+    ///
+    /// # Tearing
+    ///
+    /// This load may tear
+    #[inline(always)]
+    pub fn load_usize(&self) -> Option<usize> {
+        #[cfg(target_pointer_width = "16")]
+        {
+            self.load_u16().map(|u| u as usize)
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            self.load_u32().map(|u| u as usize)
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            self.load_u64().map(|u| u as usize)
+        }
+    }
+
     /// Store a u8 into the start of this slice using Unordered atomic ordering
     /// mode.
     ///
     /// Returns None if the slice is empty.
     #[inline]
     pub fn store_u8(&self, val: u8) -> Option<()> {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
         if self.is_empty() {
             return None;
         }
-        // SAFETY: stack pointer cannot be zero.
-        let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
-        atomic_copy8_unsynchronized(src, self.ptr);
+        atomic_store_8_unsynchronized(self.ptr, val);
         Some(())
     }
 
@@ -534,8 +610,14 @@ impl<'a> RacySlice<'a> {
     /// This load may tear
     #[inline]
     pub fn store_u16(&self, val: u16) -> Option<()> {
-        if self.len() < 2 {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < 2 {
             return None;
+        }
+        if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
+            // Always properly aligned.
+            return Some(atomic_store_16_unsynchronized(self.ptr, val));
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
@@ -553,8 +635,14 @@ impl<'a> RacySlice<'a> {
     /// This load may tear
     #[inline]
     pub fn store_u32(&self, val: u32) -> Option<()> {
-        if self.len() < 4 {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < 4 {
             return None;
+        }
+        if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
+            // Always properly aligned.
+            return Some(atomic_store_32_unsynchronized(self.ptr, val));
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
@@ -572,8 +660,15 @@ impl<'a> RacySlice<'a> {
     /// This load may tear
     #[inline]
     pub fn store_u64(&self, val: u64) -> Option<()> {
-        if self.len() < 8 {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < 8 {
             return None;
+        }
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+        if const { align_of::<T>() >= align_of::<u64>() } || UNALIGNED_ACCESS_IS_OK {
+            // Always properly aligned.
+            return Some(atomic_store_64_unsynchronized(self.ptr, val));
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
@@ -581,8 +676,33 @@ impl<'a> RacySlice<'a> {
         Some(())
     }
 
+    /// Store a usize into the start of this slice using Unordered atomic
+    /// ordering mode.
+    ///
+    /// Returns None if the slice is smaller than `size_of::<usize>()` bytes.
+    ///
+    /// # Tearing
+    ///
+    /// This load may tear
+    #[inline]
+    pub fn store_usize(&self, val: usize) -> Option<()> {
+        #[cfg(target_pointer_width = "16")]
+        {
+            self.store_u16(val as u16)
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            self.store_u32(val as u32)
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            self.store_u64(val as u64)
+        }
+    }
+
     /// Convert the memory into a racy atomic byte at the start of the slice.
     /// Returns None if the slice is smaller than 1 byte.
+    #[inline]
     pub fn as_u8(&self) -> Option<RacyU8<'a>> {
         if self.is_empty() {
             None
@@ -594,8 +714,11 @@ impl<'a> RacySlice<'a> {
     /// Convert the memory into a racy atomic u16 at the start of the slice.
     /// Returns None if the slice is smaller than 2 bytes in size or is not
     /// correctly aligned.
+    #[inline]
     pub fn as_u16(&self) -> Option<RacyU16<'a>> {
-        if self.len() < 2 || !self.ptr.cast::<u16>().is_aligned() {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < size_of::<u16>() || !self.ptr.cast::<u16>().is_aligned() {
             None
         } else {
             Some(RacyU16::from_ptr(self.ptr))
@@ -605,8 +728,11 @@ impl<'a> RacySlice<'a> {
     /// Convert the memory into a racy atomic u32 at the start of the slice.
     /// Returns None if the slice is smaller than 4 bytes in size or is not
     /// correctly aligned.
+    #[inline]
     pub fn as_u32(&self) -> Option<RacyU32<'a>> {
-        if self.len() < 4 || !self.ptr.cast::<u32>().is_aligned() {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < size_of::<u32>() || !self.ptr.cast::<u32>().is_aligned() {
             None
         } else {
             Some(RacyU32::from_ptr(self.ptr))
@@ -616,12 +742,71 @@ impl<'a> RacySlice<'a> {
     /// Convert the memory into a racy atomic u64 at the start of the slice.
     /// Returns None if the slice is smaller than 8 bytes in size or is not
     /// correctly aligned.
+    #[inline]
     pub fn as_u64(&self) -> Option<RacyU64<'a>> {
-        if self.len() < 8 || !self.ptr.cast::<u64>().is_aligned() {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < size_of::<u64>() || !self.ptr.cast::<u64>().is_aligned() {
             None
         } else {
             Some(RacyU64::from_ptr(self.ptr))
         }
+    }
+
+    /// Convert the memory into a racy atomic usize at the start of the slice.
+    /// Returns None if the slice is smaller than `size_of::<usize>()` bytes in
+    /// size or is not correctly aligned.
+    #[inline]
+    pub fn as_usize(&self) -> Option<RacyUsize<'a>> {
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        if self.len() * size_of::<T>() < size_of::<usize>()
+            || !self.ptr.cast::<usize>().is_aligned()
+        {
+            None
+        } else {
+            Some(RacyUsize::from_ptr(self.ptr))
+        }
+    }
+}
+
+impl<'a> RacySlice<'a, u8> {
+    /// Returns a racy element at the given position or `None` if out of
+    /// bounds.
+    pub fn get(&self, index: usize) -> Option<RacyU8<'a>> {
+        self.slice_from(index).as_u8()
+    }
+}
+
+impl<'a> RacySlice<'a, u16> {
+    /// Returns a racy element at the given position or `None` if out of
+    /// bounds.
+    pub fn get(&self, index: usize) -> Option<RacyU16<'a>> {
+        self.slice_from(index).as_u16()
+    }
+}
+
+impl<'a> RacySlice<'a, u32> {
+    /// Returns a racy element at the given position or `None` if out of
+    /// bounds.
+    pub fn get(&self, index: usize) -> Option<RacyU32<'a>> {
+        self.slice_from(index).as_u32()
+    }
+}
+
+impl<'a> RacySlice<'a, u64> {
+    /// Returns a racy element at the given position or `None` if out of
+    /// bounds.
+    pub fn get(&self, index: usize) -> Option<RacyU64<'a>> {
+        self.slice_from(index).as_u64()
+    }
+}
+
+impl<'a> RacySlice<'a, usize> {
+    /// Returns a racy element at the given position or `None` if out of
+    /// bounds.
+    pub fn get(&self, index: usize) -> Option<RacyUsize<'a>> {
+        self.slice_from(index).as_usize()
     }
 }
 
@@ -629,16 +814,16 @@ impl<'a> RacySlice<'a> {
 ///
 /// This is intended for unsafe usage only, where eg. the size of an EMCAScript
 /// memory is stored separately from the pointer.
-pub struct RacyPtr(NonNull<()>);
+pub struct RacyPtr<T: Sealed>(NonNull<()>, PhantomData<NonNull<UnsafeCell<T>>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Send for RacyPtr {}
+unsafe impl<T: Sealed> Send for RacyPtr<T> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl Sync for RacyPtr {}
+unsafe impl<T: Sealed> Sync for RacyPtr<T> {}
 
-impl RacyPtr {
+impl<T: Sealed> RacyPtr<T> {
     fn from_ptr(ptr: NonNull<()>) -> Self {
-        Self(ptr)
+        Self(ptr, PhantomData)
     }
 
     /// Get racy atomic pointer as a non-null pointer.
@@ -650,6 +835,11 @@ impl RacyPtr {
     /// meaningful operation on the pointer is to perform possible offsetting.
     pub fn as_ptr(self) -> NonNull<()> {
         self.0
+    }
+
+    /// Casts to a pointer of another type.
+    pub fn cast<U: Sealed>(self) -> RacyPtr<U> {
+        RacyPtr(self.0.cast(), PhantomData)
     }
 }
 
@@ -1329,6 +1519,258 @@ impl RacyU64<'_> {
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
     pub fn swap(&self, val: u64) -> u64 {
         atomic_exchange_64_seq_cst(self.as_ptr(), val)
+    }
+}
+
+pub struct RacyUsize<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<usize>>);
+
+// SAFETY: Racy atomics are safe to access from multiple threads.
+unsafe impl Send for RacyUsize<'_> {}
+// SAFETY: Racy atomics are safe to access from multiple threads.
+unsafe impl Sync for RacyUsize<'_> {}
+
+impl RacyUsize<'_> {
+    fn from_ptr(ptr: NonNull<()>) -> Self {
+        Self(ptr, PhantomData)
+    }
+
+    fn as_ptr(&self) -> NonNull<()> {
+        self.0
+    }
+
+    /// Stores a value into the racy atomic integer if the current value is the
+    /// same as the `current` value.
+    ///
+    /// The return value is a result indicating whether the new value was
+    /// written and containing the previous value. On success this value is
+    /// guaranteed to be equal to `current`.
+    ///
+    /// The [`Ordering`] of the operation is always [`SeqCst`].
+    ///
+    /// [`Ordering`]: crate::Ordering
+    /// [`SeqCst`]: crate::Ordering::SeqCst
+    #[inline]
+    #[cfg(any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "arm"
+    ))]
+    pub fn compare_exchange(&self, current: usize, new: usize) -> Result<usize, usize> {
+        #[cfg(target_pointer_width = "16")]
+        {
+            let old =
+                atomic_cmp_xchg_16_seq_cst(self.as_ptr(), current as u16, new as u16) as usize;
+            if old == current { Ok(old) } else { Err(old) }
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            let old =
+                atomic_cmp_xchg_16_seq_cst(self.as_ptr(), current as u32, new as u32) as usize;
+            if old == current { Ok(old) } else { Err(old) }
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            let old =
+                atomic_cmp_xchg_64_seq_cst(self.as_ptr(), current as u64, new as u64) as usize;
+            if old == current { Ok(old) } else { Err(old) }
+        }
+    }
+
+    /// Adds to the current value, returning the previous value.
+    ///
+    /// This operation wraps around on overflow.
+    ///
+    /// The [`Ordering`] of the operation is always [`SeqCst`].
+    ///
+    /// [`Ordering`]: crate::Ordering
+    /// [`SeqCst`]: crate::Ordering::SeqCst
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn fetch_add(&self, val: usize) -> usize {
+        #[cfg(target_pointer_width = "16")]
+        {
+            atomic_add_16_seq_cst(self.as_ptr(), val as u16) as usize
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            atomic_add_32_seq_cst(self.as_ptr(), val as u32) as usize
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            atomic_add_64_seq_cst(self.as_ptr(), val as u64) as usize
+        }
+    }
+
+    /// Bitwise "and" with the current value.
+    ///
+    /// Performs a bitwise "and" operation on the current value and the argument `val`, and
+    /// sets the new value to the result.
+    ///
+    /// Returns the previous value.
+    ///
+    /// The [`Ordering`] of the operation is always [`SeqCst`].
+    ///
+    /// [`Ordering`]: crate::Ordering
+    /// [`SeqCst`]: crate::Ordering::SeqCst
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn fetch_and(&self, val: usize) -> usize {
+        #[cfg(target_pointer_width = "16")]
+        {
+            atomic_and_16_seq_cst(self.as_ptr(), val as u16) as usize
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            atomic_and_32_seq_cst(self.as_ptr(), val as u32) as usize
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            atomic_and_64_seq_cst(self.as_ptr(), val as u64) as usize
+        }
+    }
+
+    /// Bitwise "or" with the current value.
+    ///
+    /// Performs a bitwise "or" operation on the current value and the argument `val`, and
+    /// sets the new value to the result.
+    ///
+    /// Returns the previous value.
+    ///
+    /// The [`Ordering`] of the operation is always [`SeqCst`].
+    ///
+    /// [`Ordering`]: crate::Ordering
+    /// [`SeqCst`]: crate::Ordering::SeqCst
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn fetch_or(&self, val: usize) -> usize {
+        #[cfg(target_pointer_width = "16")]
+        {
+            atomic_or_16_seq_cst(self.as_ptr(), val as u16) as usize
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            atomic_or_32_seq_cst(self.as_ptr(), val as u32) as usize
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            atomic_or_64_seq_cst(self.as_ptr(), val as u64) as usize
+        }
+    }
+
+    /// Bitwise "xor" with the current value.
+    ///
+    /// Performs a bitwise "xor" operation on the current value and the argument `val`, and
+    /// sets the new value to the result.
+    ///
+    /// Returns the previous value.
+    ///
+    /// The [`Ordering`] of the operation is always [`SeqCst`].
+    ///
+    /// [`Ordering`]: crate::Ordering
+    /// [`SeqCst`]: crate::Ordering::SeqCst
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn fetch_xor(&self, val: usize) -> usize {
+        #[cfg(target_pointer_width = "16")]
+        {
+            atomic_xor_16_seq_cst(self.as_ptr(), val as u16) as usize
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            atomic_xor_32_seq_cst(self.as_ptr(), val as u32) as usize
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            atomic_xor_64_seq_cst(self.as_ptr(), val as u64) as usize
+        }
+    }
+
+    /// Loads a value from the atomic integer.
+    ///
+    /// `load` takes an [`Ordering`] argument which describes the memory
+    /// ordering of this operation. All ordering modes are possible.
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn load(&self, order: Ordering) -> usize {
+        #[cfg(target_pointer_width = "16")]
+        {
+            if order == Ordering::SeqCst {
+                atomic_load_16_seq_cst(self.as_ptr()) as usize
+            } else {
+                atomic_load_16_unsynchronized(self.as_ptr()) as usize
+            }
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            if order == Ordering::SeqCst {
+                atomic_load_32_seq_cst(self.as_ptr()) as usize
+            } else {
+                atomic_load_32_unsynchronized(self.as_ptr()) as usize
+            }
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            if order == Ordering::SeqCst {
+                atomic_load_64_seq_cst(self.as_ptr()) as usize
+            } else {
+                atomic_load_64_unsynchronized(self.as_ptr()) as usize
+            }
+        }
+    }
+
+    /// Stores a value into the atomic integer.
+    ///
+    /// `store` takes an [`Ordering`] argument which describes the memory
+    /// ordering of this operation. All ordering modes are possible.
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn store(&self, val: usize, order: Ordering) {
+        #[cfg(target_pointer_width = "16")]
+        {
+            if order == Ordering::SeqCst {
+                atomic_store_16_seq_cst(self.as_ptr(), val as u16)
+            } else {
+                atomic_store_16_unsynchronized(self.as_ptr(), val as u16)
+            }
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            if order == Ordering::SeqCst {
+                atomic_store_32_seq_cst(self.as_ptr(), val as u32)
+            } else {
+                atomic_store_32_unsynchronized(self.as_ptr(), val as u32)
+            }
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            if order == Ordering::SeqCst {
+                atomic_store_64_seq_cst(self.as_ptr(), val as u64)
+            } else {
+                atomic_store_64_unsynchronized(self.as_ptr(), val as u64)
+            }
+        }
+    }
+
+    /// Stores a value into the atomic integer, returning the previous value.
+    ///
+    /// `swap` takes an [`Ordering`] argument which describes the memory ordering
+    /// of this operation. All ordering modes are possible.
+    #[inline]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
+    pub fn swap(&self, val: usize) -> usize {
+        #[cfg(target_pointer_width = "16")]
+        {
+            atomic_exchange_16_seq_cst(self.as_ptr(), val as u16) as usize
+        }
+        #[cfg(target_pointer_width = "32")]
+        {
+            atomic_exchange_32_seq_cst(self.as_ptr(), val as u32) as usize
+        }
+        #[cfg(target_pointer_width = "64")]
+        {
+            atomic_exchange_64_seq_cst(self.as_ptr(), val as u64) as usize
+        }
     }
 }
 

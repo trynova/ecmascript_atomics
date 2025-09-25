@@ -16,7 +16,8 @@ use crate::generated::{
 };
 
 /// On x86, unaligned accesses work fine.
-const UNALIGNED_ACCESS_IS_OK: bool = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
+pub(crate) const UNALIGNED_ACCESS_IS_OK: bool =
+    cfg!(any(target_arch = "x86", target_arch = "x86_64"));
 
 fn can_copy_aligned<const ALIGNMENT: usize>(
     src: NonNull<()>,
