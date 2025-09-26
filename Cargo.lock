@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "ecmascript_atomics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ecmascript_atomics_gen_copy",
 ]
