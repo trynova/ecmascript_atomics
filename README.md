@@ -104,11 +104,9 @@ model, then first consider the following alternatives:
    some obscure hardware platforms (if you thought DEC, you're right), and
    perhaps some extra locks on ARM platforms sometimes. That would be my
    choice.
-2. Use `AtomicUsize` as your atomic storage and simulate mixed-size atomics by
+2. Use `AtomicU64` as your atomic storage and simulate mixed-size atomics by
    performing CAS loops on these usize chunks, and replace Unordered ordering
-   with Relaxed.  This may be the smartest option compared, when the other
-   option is to put your trust in some random library filled with inline
-   assembly copied off the Internet.
+   with Relaxed.  This may be the smartest option by far.
 3. Use `AtomicU8` as your atomic storage and hope that either the compiler
    takes pity on you and optimises the atomic byte operations into larger
    atomic chunk operations (I am not aware of such optimisations existing), or
