@@ -174,9 +174,8 @@ pub fn atomic_pause() {
 /// [`enter`]: crate::RacyMemory::enter
 /// [`exit`]: crate::RacyMemory::exit
 pub struct RacyMemory<T: Sealed> {
-    ptr: NonNull<()>,
+    ptr: RacyPtr<T>,
     len: usize,
-    __marker: PhantomData<T>,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -214,9 +213,8 @@ impl<T: Sealed> RacyMemory<T> {
         }
         RacyMemory {
             // SAFETY: Magic spell always returns non-null pointers.
-            ptr: unsafe { NonNull::new_unchecked(ptr.cast()) },
+            ptr: RacyPtr::from_ptr(unsafe { NonNull::new_unchecked(ptr.cast()) }),
             len,
-            __marker: PhantomData,
         }
     }
 
@@ -234,9 +232,8 @@ impl<T: Sealed> RacyMemory<T> {
     pub unsafe fn enter_ptr(ptr: NonNull<T>) -> Self {
         let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>()) };
         Self {
-            ptr,
+            ptr: ptr.cast(),
             len: 1,
-            __marker: PhantomData,
         }
     }
 
@@ -255,9 +252,8 @@ impl<T: Sealed> RacyMemory<T> {
         let len = ptr.len();
         let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>() * len) };
         Self {
-            ptr,
+            ptr: ptr.cast(),
             len,
-            __marker: PhantomData,
         }
     }
 
@@ -278,7 +274,7 @@ impl<T: Sealed> RacyMemory<T> {
     #[inline]
     #[must_use]
     pub unsafe fn exit(self) -> (NonNull<T>, usize) {
-        let mut ptr = self.ptr.as_ptr();
+        let mut ptr = self.ptr.as_ptr().as_ptr();
         // SAFETY: noop.
         unsafe {
             core::arch::asm!(
@@ -295,12 +291,16 @@ impl<T: Sealed> RacyMemory<T> {
     }
 
     /// Access the racy atomic memory using a shared slice.
-    pub fn as_slice(&self) -> RacySlice<'_, T> {
-        RacySlice {
-            ptr: self.ptr,
-            len: self.len,
-            __marker: PhantomData,
-        }
+    #[inline(always)]
+    pub const fn as_slice(&self) -> RacySlice<'_, T> {
+        // SAFETY: type guarantees proper allocation.
+        unsafe { RacySlice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    /// Destructure a racy atomic memory into raw parts.
+    #[inline(always)]
+    pub const fn into_raw_parts(self) -> (RacyPtr<T>, usize) {
+        (self.ptr, self.len)
     }
 }
 
@@ -323,7 +323,7 @@ impl Sealed for usize {}
 /// Any Rust reads or writes into the memory are undefined behaviour.
 #[derive(Clone, Copy)]
 pub struct RacySlice<'a, T: Sealed> {
-    ptr: NonNull<()>,
+    ptr: RacyPtr<T>,
     len: usize,
     __marker: PhantomData<&'a UnsafeCell<T>>,
 }
@@ -336,8 +336,8 @@ unsafe impl<T: Sealed> Sync for RacySlice<'_, T> {}
 impl<'a, T: Sealed> RacySlice<'a, T> {
     /// Destructure a racy atomic memory slice into raw parts.
     #[inline(always)]
-    pub fn into_raw_parts(self) -> (RacyPtr<T>, usize) {
-        (RacyPtr::from_ptr(self.ptr), self.len)
+    pub const fn into_raw_parts(self) -> (RacyPtr<T>, usize) {
+        (self.ptr, self.len)
     }
 
     /// Create a new racy atomic memory slice from a racy atomic byte pointer
@@ -349,26 +349,26 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     /// `len` elements and be properly aligned. Note that this function does
     /// not "reallocate" the pointed-to memory.
     #[inline(always)]
-    pub unsafe fn from_raw_parts(ptr: RacyPtr<T>, len: usize) -> Self {
+    pub const unsafe fn from_raw_parts(ptr: RacyPtr<T>, len: usize) -> Self {
         Self {
-            ptr: ptr.0,
+            ptr: ptr,
             len,
             __marker: PhantomData,
         }
     }
 
-    fn as_ptr(&self) -> RacyPtr<T> {
-        RacyPtr::from_ptr(self.ptr)
+    const fn as_ptr(&self) -> RacyPtr<T> {
+        self.ptr
     }
 
     /// Returns the number of elements in the slice.
     #[inline(always)]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
     /// Return the byte length of the slice.
-    fn byte_length(&self) -> usize {
+    const fn byte_length(&self) -> usize {
         // SAFETY: slice is guaranteed to point to len valid items.
         unsafe {
             assert_unchecked(self.len().checked_mul(size_of::<T>()).is_some());
@@ -378,7 +378,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
 
     /// Returns `true` if the slice has a length of 0.
     #[inline(always)]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
@@ -391,8 +391,8 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     /// constraint and element size.
     pub fn align_to<U: Sealed>(self) -> (RacySlice<'a, u8>, RacySlice<'a, U>, RacySlice<'a, u8>) {
         let byte_length = self.byte_length();
-        let head_ptr = self.ptr;
-        let head_length = self.ptr.align_offset(align_of::<U>()).min(byte_length);
+        let head_ptr = self.ptr.as_ptr();
+        let head_length = head_ptr.align_offset(align_of::<U>()).min(byte_length);
         // SAFETY: does not overflow length.
         let body_ptr = unsafe { head_ptr.byte_add(head_length) };
         let remaining_byte_length = byte_length - head_length;
@@ -417,17 +417,17 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         }
         (
             RacySlice {
-                ptr: head_ptr,
+                ptr: RacyPtr::from_ptr(head_ptr),
                 len: head_length,
                 __marker: PhantomData,
             },
             RacySlice {
-                ptr: body_ptr,
+                ptr: RacyPtr::from_ptr(body_ptr),
                 len: body_length,
                 __marker: PhantomData,
             },
             RacySlice {
-                ptr: tail_ptr,
+                ptr: RacyPtr::from_ptr(tail_ptr),
                 len: tail_length,
                 __marker: PhantomData,
             },
@@ -436,7 +436,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
 
     /// Transmutes the the racy memory slice to a slice of racy bytes.
     #[inline(always)]
-    pub fn to_bytes(self) -> RacySlice<'a, u8> {
+    pub const fn to_bytes(self) -> RacySlice<'a, u8> {
         // SAFETY: Totally safe here.
         unsafe { RacySlice::from_raw_parts(self.as_ptr().cast(), self.byte_length()) }
     }
@@ -445,23 +445,26 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     /// Returns an empty slice if the offset is beyond the end of this slice.
     #[inline]
     pub fn slice_from(&self, offset: usize) -> Self {
-        Self {
-            // SAFETY: cannot overflow len.
-            ptr: unsafe { self.ptr.byte_add(offset.min(self.len) * size_of::<T>()) },
-            len: self.len.saturating_sub(offset),
-            __marker: PhantomData,
-        }
+        // SAFETY: cannot overflow len.
+        let ptr = RacyPtr::from_ptr(unsafe {
+            self.ptr
+                .as_ptr()
+                .byte_add(offset.min(self.len) * size_of::<T>())
+        });
+        let len = self.len.saturating_sub(offset);
+        // SAFETY: Guaranteed to be proper.
+        unsafe { Self::from_raw_parts(ptr, len) }
     }
 
     /// Create a slice of racy atomic memory ending at the given offset.
     /// Returns self if the offset is beyond the end of this slice.
     #[inline]
     pub fn slice_to(&self, offset: usize) -> Self {
-        Self {
-            ptr: self.ptr,
-            len: self.len.min(offset),
-            __marker: PhantomData,
-        }
+        let ptr = self.ptr;
+        let len = self.len.min(offset);
+
+        // SAFETY: Guaranteed to be proper.
+        unsafe { Self::from_raw_parts(ptr, len) }
     }
 
     /// Create a slice of racy atomic memory with the given offsets, bounded to
@@ -473,12 +476,10 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         let end = end.min(self.len);
         // Then calculate the slice length, saturating at 0 if order is reversed.
         let len = end.saturating_sub(start);
-        Self {
-            // SAFETY: cannot overflow len.
-            ptr: unsafe { self.ptr.byte_add(start * size_of::<T>()) },
-            len,
-            __marker: PhantomData,
-        }
+        // SAFETY: cannot overflow len.
+        let ptr = RacyPtr::from_ptr(unsafe { self.ptr.as_ptr().byte_add(start * size_of::<T>()) });
+        // SAFETY: Guaranteed to be proper.
+        unsafe { Self::from_raw_parts(ptr, len) }
     }
 
     /// Load a u8 from the start of this slice using Unordered atomic ordering.
@@ -487,11 +488,11 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn load_u8(&self) -> Option<u8> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.is_empty() {
             return None;
         }
-        Some(atomic_load_8_unsynchronized(self.ptr))
+        Some(atomic_load_8_unsynchronized(self.ptr.as_ptr()))
     }
 
     /// Load a u16 from the start of this slice using Unordered atomic
@@ -505,18 +506,18 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn load_u16(&self) -> Option<u16> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.byte_length() < 2 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_load_16_unsynchronized(self.ptr));
+            return Some(atomic_load_16_unsynchronized(self.ptr.as_ptr()));
         }
         let mut scratch = MaybeUninit::<u16>::uninit();
         let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
         // SAFETY: checked self length, dst is proper length.
-        unsafe { unordered_memcpy_down_unsynchronized(self.ptr, dst, 2) };
+        unsafe { unordered_memcpy_down_unsynchronized(self.ptr.as_ptr(), dst, 2) };
         // SAFETY: copy has initialised the scratch data.
         Some(unsafe { scratch.assume_init() })
     }
@@ -532,18 +533,18 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn load_u32(&self) -> Option<u32> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.byte_length() < 4 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_load_32_unsynchronized(self.ptr));
+            return Some(atomic_load_32_unsynchronized(self.ptr.as_ptr()));
         }
         let mut scratch = MaybeUninit::<u32>::uninit();
         let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
         // SAFETY: checked self length, dst is proper length.
-        unsafe { unordered_memcpy_down_unsynchronized(self.ptr, dst, 4) };
+        unsafe { unordered_memcpy_down_unsynchronized(self.ptr.as_ptr(), dst, 4) };
         // SAFETY: copy has initialised the scratch data.
         Some(unsafe { scratch.assume_init() })
     }
@@ -559,19 +560,19 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn load_u64(&self) -> Option<u64> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.byte_length() < 8 {
             return None;
         }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
         if const { align_of::<T>() >= align_of::<u64>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_load_64_unsynchronized(self.ptr));
+            return Some(atomic_load_64_unsynchronized(self.ptr.as_ptr()));
         }
         let mut scratch = MaybeUninit::<u64>::uninit();
         let dst = unsafe { NonNull::new_unchecked(scratch.as_mut_ptr().cast::<()>()) };
         // SAFETY: checked self length, dst is proper length.
-        unsafe { unordered_memcpy_down_unsynchronized(self.ptr, dst, 8) };
+        unsafe { unordered_memcpy_down_unsynchronized(self.ptr.as_ptr(), dst, 8) };
         // SAFETY: copy has initialised the scratch data.
         Some(unsafe { scratch.assume_init() })
     }
@@ -607,11 +608,11 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn store_u8(&self, val: u8) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.is_empty() {
             return None;
         }
-        atomic_store_8_unsynchronized(self.ptr, val);
+        atomic_store_8_unsynchronized(self.ptr.as_ptr(), val);
         Some(())
     }
 
@@ -626,17 +627,17 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn store_u16(&self, val: u16) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.byte_length() < 2 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_store_16_unsynchronized(self.ptr, val));
+            return Some(atomic_store_16_unsynchronized(self.ptr.as_ptr(), val));
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
-        unsafe { unordered_memcpy_down_unsynchronized(src, self.ptr, 2) };
+        unsafe { unordered_memcpy_down_unsynchronized(src, self.ptr.as_ptr(), 2) };
         Some(())
     }
 
@@ -651,17 +652,17 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn store_u32(&self, val: u32) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.byte_length() < 4 {
             return None;
         }
         if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_store_32_unsynchronized(self.ptr, val));
+            return Some(atomic_store_32_unsynchronized(self.ptr.as_ptr(), val));
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
-        unsafe { unordered_memcpy_down_unsynchronized(src, self.ptr, 4) };
+        unsafe { unordered_memcpy_down_unsynchronized(src, self.ptr.as_ptr(), 4) };
         Some(())
     }
 
@@ -676,18 +677,18 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn store_u64(&self, val: u64) -> Option<()> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
         if self.byte_length() < 8 {
             return None;
         }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
         if const { align_of::<T>() >= align_of::<u64>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_store_64_unsynchronized(self.ptr, val));
+            return Some(atomic_store_64_unsynchronized(self.ptr.as_ptr(), val));
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
-        unsafe { unordered_memcpy_down_unsynchronized(src, self.ptr, 8) };
+        unsafe { unordered_memcpy_down_unsynchronized(src, self.ptr.as_ptr(), 8) };
         Some(())
     }
 
@@ -722,7 +723,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         if self.is_empty() {
             None
         } else {
-            Some(RacyU8::from_ptr(self.ptr))
+            Some(RacyU8::from_ptr(self.ptr.as_ptr()))
         }
     }
 
@@ -732,11 +733,11 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn as_u16(&self) -> Option<RacyU16<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.byte_length() < size_of::<u16>() || !self.ptr.cast::<u16>().is_aligned() {
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
+        if self.byte_length() < size_of::<u16>() || !self.ptr.as_ptr().cast::<u16>().is_aligned() {
             None
         } else {
-            Some(RacyU16::from_ptr(self.ptr))
+            Some(RacyU16::from_ptr(self.ptr.as_ptr()))
         }
     }
 
@@ -746,11 +747,11 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn as_u32(&self) -> Option<RacyU32<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.byte_length() < size_of::<u32>() || !self.ptr.cast::<u32>().is_aligned() {
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
+        if self.byte_length() < size_of::<u32>() || !self.ptr.as_ptr().cast::<u32>().is_aligned() {
             None
         } else {
-            Some(RacyU32::from_ptr(self.ptr))
+            Some(RacyU32::from_ptr(self.ptr.as_ptr()))
         }
     }
 
@@ -760,11 +761,11 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn as_u64(&self) -> Option<RacyU64<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.byte_length() < size_of::<u64>() || !self.ptr.cast::<u64>().is_aligned() {
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
+        if self.byte_length() < size_of::<u64>() || !self.ptr.as_ptr().cast::<u64>().is_aligned() {
             None
         } else {
-            Some(RacyU64::from_ptr(self.ptr))
+            Some(RacyU64::from_ptr(self.ptr.as_ptr()))
         }
     }
 
@@ -774,11 +775,13 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline]
     pub fn as_usize(&self) -> Option<RacyUsize<'a>> {
         // SAFETY: Slice should always be aligned to its own type.
-        unsafe { assert_unchecked(self.ptr.cast::<T>().is_aligned()) };
-        if self.byte_length() < size_of::<usize>() || !self.ptr.cast::<usize>().is_aligned() {
+        unsafe { assert_unchecked(self.ptr.as_ptr().cast::<T>().is_aligned()) };
+        if self.byte_length() < size_of::<usize>()
+            || !self.ptr.as_ptr().cast::<usize>().is_aligned()
+        {
             None
         } else {
-            Some(RacyUsize::from_ptr(self.ptr))
+            Some(RacyUsize::from_ptr(self.ptr.as_ptr()))
         }
     }
 
@@ -844,8 +847,10 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         let count = self.len();
         // SAFETY: slice is guaranteed to point to len valid elements.
         if unsafe {
-            self.ptr <= other.ptr && other.ptr < self.ptr.byte_add(self.byte_length())
-                || other.ptr <= self.ptr && self.ptr < other.ptr.byte_add(other.byte_length())
+            self.ptr.as_ptr() <= other.ptr.as_ptr()
+                && other.ptr.as_ptr() < self.ptr.as_ptr().byte_add(self.byte_length())
+                || other.ptr.as_ptr() <= self.ptr.as_ptr()
+                    && self.ptr.as_ptr() < other.ptr.as_ptr().byte_add(other.byte_length())
         } {
             // Overlapping data.
             // SAFETY: Count checked to be valid for both.
@@ -910,6 +915,7 @@ impl<'a> RacySlice<'a, usize> {
 /// This is intended for unsafe usage only, where eg. the size of an EMCAScript
 /// memory is stored separately from the pointer.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct RacyPtr<T: Sealed>(NonNull<()>, PhantomData<NonNull<UnsafeCell<T>>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -918,7 +924,15 @@ unsafe impl<T: Sealed> Send for RacyPtr<T> {}
 unsafe impl<T: Sealed> Sync for RacyPtr<T> {}
 
 impl<T: Sealed> RacyPtr<T> {
-    fn from_ptr(ptr: NonNull<()>) -> Self {
+    /// Creates a new racy pointer that is dangling, but non-null and
+    /// well-aligned.
+    #[inline(always)]
+    #[must_use]
+    pub const fn dangling() -> RacyPtr<T> {
+        Self::from_ptr(NonNull::<T>::dangling().cast())
+    }
+
+    const fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr, PhantomData)
     }
 
@@ -929,12 +943,12 @@ impl<T: Sealed> RacyPtr<T> {
     /// While this provides a Rust-recognisable pointer, this pointer is
     /// invalid and cannot be used to read or write any data. The only
     /// meaningful operation on the pointer is to perform possible offsetting.
-    pub fn as_ptr(self) -> NonNull<()> {
+    pub const fn as_ptr(self) -> NonNull<()> {
         self.0
     }
 
     /// Casts to a pointer of another type.
-    pub fn cast<U: Sealed>(self) -> RacyPtr<U> {
+    pub const fn cast<U: Sealed>(self) -> RacyPtr<U> {
         RacyPtr(self.0.cast(), PhantomData)
     }
 }
@@ -942,6 +956,7 @@ impl<T: Sealed> RacyPtr<T> {
 /// An opaque pointer to a byte of memory implementing the ECMAScript atomic
 /// memory model.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct RacyU8<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u8>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1121,6 +1136,7 @@ impl RacyU8<'_> {
 }
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct RacyU16<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u16>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1300,6 +1316,7 @@ impl RacyU16<'_> {
 }
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct RacyU32<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u32>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1479,6 +1496,7 @@ impl RacyU32<'_> {
 }
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct RacyU64<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<u64>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
@@ -1623,6 +1641,7 @@ impl RacyU64<'_> {
 }
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct RacyUsize<'a>(NonNull<()>, PhantomData<&'a UnsafeCell<usize>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
