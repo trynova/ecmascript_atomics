@@ -211,11 +211,9 @@ impl<T: Sealed> RacyMemory<T> {
                 options(nostack, preserves_flags)
             )
         }
-        RacyMemory {
-            // SAFETY: Magic spell always returns non-null pointers.
-            ptr: RacyPtr::from_ptr(unsafe { NonNull::new_unchecked(ptr.cast()) }),
-            len,
-        }
+        // SAFETY: Magic spell always returns non-null pointers.
+        let ptr = RacyPtr::from_ptr(unsafe { NonNull::new_unchecked(ptr.cast()) });
+        RacyMemory::from_raw_parts(ptr, len)
     }
 
     /// Move a typed memory allocation into the ECMAScript memory model.
@@ -231,10 +229,7 @@ impl<T: Sealed> RacyMemory<T> {
     /// [`enter`]: crate::RacyMemory::enter
     pub unsafe fn enter_ptr(ptr: NonNull<T>) -> Self {
         let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>()) };
-        Self {
-            ptr: ptr.cast(),
-            len: 1,
-        }
+        Self::from_raw_parts(ptr.cast(), 1)
     }
 
     /// Move a typed memory allocation slice into the ECMAScript memory model.
@@ -251,10 +246,7 @@ impl<T: Sealed> RacyMemory<T> {
     pub unsafe fn enter_slice(ptr: NonNull<[T]>) -> Self {
         let len = ptr.len();
         let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>() * len) };
-        Self {
-            ptr: ptr.cast(),
-            len,
-        }
+        Self::from_raw_parts(ptr.cast(), len)
     }
 
     /// Move an ECMAScript memory model into the void and return a new Rust
@@ -301,6 +293,17 @@ impl<T: Sealed> RacyMemory<T> {
     #[inline(always)]
     pub const fn into_raw_parts(self) -> (RacyPtr<T>, usize) {
         (self.ptr, self.len)
+    }
+
+    /// Recrate a racy atomic memory slice from raw parts.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a racy atomic memory with a length of exactly `len`
+    /// elements and be properly aligned. Note that this function does
+    /// not "reallocate" the pointed-to memory.
+    pub const fn from_raw_parts(ptr: RacyPtr<T>, len: usize) -> Self {
+        Self { ptr, len }
     }
 }
 
@@ -351,7 +354,7 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     #[inline(always)]
     pub const unsafe fn from_raw_parts(ptr: RacyPtr<T>, len: usize) -> Self {
         Self {
-            ptr: ptr,
+            ptr,
             len,
             __marker: PhantomData,
         }
@@ -633,7 +636,10 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         }
         if const { align_of::<T>() >= align_of::<u16>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_store_16_unsynchronized(self.ptr.as_ptr(), val));
+            return {
+                atomic_store_16_unsynchronized(self.ptr.as_ptr(), val);
+                Some(())
+            };
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
@@ -658,7 +664,10 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         }
         if const { align_of::<T>() >= align_of::<u32>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_store_32_unsynchronized(self.ptr.as_ptr(), val));
+            return {
+                atomic_store_32_unsynchronized(self.ptr.as_ptr(), val);
+                Some(())
+            };
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
@@ -684,7 +693,10 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64",))]
         if const { align_of::<T>() >= align_of::<u64>() } || UNALIGNED_ACCESS_IS_OK {
             // Always properly aligned.
-            return Some(atomic_store_64_unsynchronized(self.ptr.as_ptr(), val));
+            return {
+                atomic_store_64_unsynchronized(self.ptr.as_ptr(), val);
+                Some(())
+            };
         }
         // SAFETY: checked self length, dst is proper length.
         let src = unsafe { NonNull::new_unchecked(&val as *const _ as *mut ()) };
@@ -1944,7 +1956,7 @@ unsafe fn unordered_copy_nonoverlapping<T: Sealed>(src: NonNull<T>, dst: NonNull
 /// Behavior is undefined if any of the following conditions are violated:
 ///
 /// * `src` must be [valid] for reads of `count` elements, OR it must be an
-///    opaque racy handle into a racy slice of `count` elements.
+///   opaque racy handle into a racy slice of `count` elements.
 ///
 /// * `dst` must be [valid] for writes of `count` elements, and must remain
 ///   valid even when `src` is read for `count` elements (this means if the
