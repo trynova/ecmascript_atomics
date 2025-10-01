@@ -91,6 +91,17 @@ use unordered_copy::*;
 
 use crate::private::Sealed;
 
+/// Public trait for allowing users of the library to name the types that can
+/// be natively stored in racy memory. These are effectively the unsigned
+/// integers from 1 to 8 bytes in size.
+pub trait RacyStorage: Sealed {}
+
+impl RacyStorage for u8 {}
+impl RacyStorage for u16 {}
+impl RacyStorage for u32 {}
+impl RacyStorage for u64 {}
+impl RacyStorage for usize {}
+
 /// ECMAScript atomic memory orderings
 ///
 /// Memory orderings specify the way atomic operations synchronise memory.
@@ -308,14 +319,14 @@ impl<T: Sealed> RacyMemory<T> {
 }
 
 mod private {
-    pub trait Sealed: Copy + core::fmt::Debug {}
-}
+    pub trait Sealed: Copy + Eq + Send + Sync + core::fmt::Display {}
 
-impl Sealed for u8 {}
-impl Sealed for u16 {}
-impl Sealed for u32 {}
-impl Sealed for u64 {}
-impl Sealed for usize {}
+    impl Sealed for u8 {}
+    impl Sealed for u16 {}
+    impl Sealed for u32 {}
+    impl Sealed for u64 {}
+    impl Sealed for usize {}
+}
 
 /// Opaque handle to a slice of memory with the ECMAScript Atomics memory
 /// model.
