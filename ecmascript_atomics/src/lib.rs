@@ -184,17 +184,17 @@ pub fn atomic_pause() {
 ///
 /// [`enter`]: crate::RacyMemory::enter
 /// [`exit`]: crate::RacyMemory::exit
-pub struct RacyMemory<T: Sealed> {
+pub struct RacyMemory<T: RacyStorage> {
     ptr: RacyPtr<T>,
     len: usize,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl<T: Sealed> Send for RacyMemory<T> {}
+unsafe impl<T: RacyStorage> Send for RacyMemory<T> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl<T: Sealed> Sync for RacyMemory<T> {}
+unsafe impl<T: RacyStorage> Sync for RacyMemory<T> {}
 
-impl<T: Sealed> RacyMemory<T> {
+impl<T: RacyStorage> RacyMemory<T> {
     /// Move a memory allocation into the ECMAScript memory model.
     ///
     /// # Safety
@@ -319,7 +319,7 @@ impl<T: Sealed> RacyMemory<T> {
 }
 
 mod private {
-    pub trait Sealed: Copy + Eq + Send + Sync + core::fmt::Display {}
+    pub trait Sealed: 'static + Copy + Eq + Send + Sync + core::fmt::Display {}
 
     impl Sealed for u8 {}
     impl Sealed for u16 {}
@@ -336,18 +336,18 @@ mod private {
 /// The memory behind this handle is not and must not be read as Rust memory.
 /// Any Rust reads or writes into the memory are undefined behaviour.
 #[derive(Clone, Copy)]
-pub struct RacySlice<'a, T: Sealed> {
+pub struct RacySlice<'a, T: RacyStorage> {
     ptr: RacyPtr<T>,
     len: usize,
     __marker: PhantomData<&'a UnsafeCell<T>>,
 }
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl<T: Sealed> Send for RacySlice<'_, T> {}
+unsafe impl<T: RacyStorage> Send for RacySlice<'_, T> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl<T: Sealed> Sync for RacySlice<'_, T> {}
+unsafe impl<T: RacyStorage> Sync for RacySlice<'_, T> {}
 
-impl<'a, T: Sealed> RacySlice<'a, T> {
+impl<'a, T: RacyStorage> RacySlice<'a, T> {
     /// Destructure a racy atomic memory slice into raw parts.
     #[inline(always)]
     pub const fn into_raw_parts(self) -> (RacyPtr<T>, usize) {
@@ -403,7 +403,9 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
     /// correctly aligned middle slice of a new type, and the suffix slice. The
     /// middle part will be as big as possible under the given alignment
     /// constraint and element size.
-    pub fn align_to<U: Sealed>(self) -> (RacySlice<'a, u8>, RacySlice<'a, U>, RacySlice<'a, u8>) {
+    pub fn align_to<U: RacyStorage>(
+        self,
+    ) -> (RacySlice<'a, u8>, RacySlice<'a, U>, RacySlice<'a, u8>) {
         let byte_length = self.byte_length();
         let head_ptr = self.ptr.as_ptr();
         let head_length = head_ptr.align_offset(align_of::<U>()).min(byte_length);
@@ -494,6 +496,123 @@ impl<'a, T: Sealed> RacySlice<'a, T> {
         let ptr = RacyPtr::from_ptr(unsafe { self.ptr.as_ptr().byte_add(start * size_of::<T>()) });
         // SAFETY: Guaranteed to be proper.
         unsafe { Self::from_raw_parts(ptr, len) }
+    }
+
+    /// Load a T at a given index of this slice with the given atomic ordering.
+    ///
+    /// Returns None if the index is out of bounds.
+    pub fn load(&self, index: usize, order: Ordering) -> Option<T> {
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: index checked against length.
+        let ptr = unsafe { self.ptr.as_ptr().cast::<T>().add(index) };
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(ptr.is_aligned()) };
+        let ptr = ptr.cast::<()>();
+        if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u8>() {
+            let result = if order == Ordering::SeqCst {
+                atomic_load_8_seq_cst(ptr)
+            } else {
+                atomic_load_8_unsynchronized(ptr)
+            };
+            // SAFETY: type checked.
+            Some(unsafe { core::mem::transmute_copy::<u8, T>(&result) })
+        } else if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u16>()
+            || cfg!(target_pointer_width = "16")
+                && core::any::TypeId::of::<T>() == core::any::TypeId::of::<usize>()
+        {
+            let result = if order == Ordering::SeqCst {
+                atomic_load_16_seq_cst(ptr)
+            } else {
+                atomic_load_16_unsynchronized(ptr)
+            };
+            // SAFETY: type checked.
+            Some(unsafe { core::mem::transmute_copy::<u16, T>(&result) })
+        } else if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u32>()
+            || cfg!(target_pointer_width = "32")
+                && core::any::TypeId::of::<T>() == core::any::TypeId::of::<usize>()
+        {
+            let result = if order == Ordering::SeqCst {
+                atomic_load_32_seq_cst(ptr)
+            } else {
+                atomic_load_32_unsynchronized(ptr)
+            };
+            // SAFETY: type checked.
+            Some(unsafe { core::mem::transmute_copy::<u32, T>(&result) })
+        } else if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u64>()
+            || cfg!(target_pointer_width = "64")
+                && core::any::TypeId::of::<T>() == core::any::TypeId::of::<usize>()
+        {
+            let result = if order == Ordering::SeqCst {
+                atomic_load_64_seq_cst(ptr)
+            } else {
+                atomic_load_64_unsynchronized(ptr)
+            };
+            // SAFETY: type checked.
+            Some(unsafe { core::mem::transmute_copy::<u64, T>(&result) })
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Store a T at a given index of this slice with the given atomic ordering.
+    ///
+    /// Returns None if the index is out of bounds.
+    pub fn store(&self, index: usize, value: T, order: Ordering) -> Option<()> {
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: index checked against length.
+        let ptr = unsafe { self.ptr.as_ptr().cast::<T>().add(index) };
+        // SAFETY: Slice should always be aligned to its own type.
+        unsafe { assert_unchecked(ptr.is_aligned()) };
+        let ptr = ptr.cast::<()>();
+        if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u8>() {
+            let value = // SAFETY: type checked.
+            unsafe { core::mem::transmute_copy::<T, u8>(&value) };
+            if order == Ordering::SeqCst {
+                atomic_store_8_seq_cst(ptr, value)
+            } else {
+                atomic_store_8_unsynchronized(ptr, value)
+            }
+        } else if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u16>()
+            || cfg!(target_pointer_width = "16")
+                && core::any::TypeId::of::<T>() == core::any::TypeId::of::<usize>()
+        {
+            let value = // SAFETY: type checked.
+            unsafe { core::mem::transmute_copy::<T, u16>(&value) };
+            if order == Ordering::SeqCst {
+                atomic_store_16_seq_cst(ptr, value)
+            } else {
+                atomic_store_16_unsynchronized(ptr, value)
+            }
+        } else if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u32>()
+            || cfg!(target_pointer_width = "32")
+                && core::any::TypeId::of::<T>() == core::any::TypeId::of::<usize>()
+        {
+            let value = // SAFETY: type checked.
+            unsafe { core::mem::transmute_copy::<T, u32>(&value) };
+            if order == Ordering::SeqCst {
+                atomic_store_32_seq_cst(ptr, value)
+            } else {
+                atomic_store_32_unsynchronized(ptr, value)
+            }
+        } else if core::any::TypeId::of::<T>() == core::any::TypeId::of::<u64>()
+            || cfg!(target_pointer_width = "64")
+                && core::any::TypeId::of::<T>() == core::any::TypeId::of::<usize>()
+        {
+            let value = // SAFETY: type checked.
+            unsafe { core::mem::transmute_copy::<T, u64>(&value) };
+            if order == Ordering::SeqCst {
+                atomic_store_64_seq_cst(ptr, value)
+            } else {
+                atomic_store_64_unsynchronized(ptr, value)
+            }
+        } else {
+            unreachable!()
+        }
+        Some(())
     }
 
     /// Load a u8 from the start of this slice using Unordered atomic ordering.
@@ -939,14 +1058,14 @@ impl<'a> RacySlice<'a, usize> {
 /// memory is stored separately from the pointer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct RacyPtr<T: Sealed>(NonNull<()>, PhantomData<NonNull<UnsafeCell<T>>>);
+pub struct RacyPtr<T: RacyStorage>(NonNull<()>, PhantomData<NonNull<UnsafeCell<T>>>);
 
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl<T: Sealed> Send for RacyPtr<T> {}
+unsafe impl<T: RacyStorage> Send for RacyPtr<T> {}
 // SAFETY: Racy atomics are safe to access from multiple threads.
-unsafe impl<T: Sealed> Sync for RacyPtr<T> {}
+unsafe impl<T: RacyStorage> Sync for RacyPtr<T> {}
 
-impl<T: Sealed> RacyPtr<T> {
+impl<T: RacyStorage> RacyPtr<T> {
     /// Creates a new racy pointer that is dangling, but non-null and
     /// well-aligned.
     #[inline(always)]
@@ -971,7 +1090,7 @@ impl<T: Sealed> RacyPtr<T> {
     }
 
     /// Casts to a pointer of another type.
-    pub const fn cast<U: Sealed>(self) -> RacyPtr<U> {
+    pub const fn cast<U: RacyStorage>(self) -> RacyPtr<U> {
         RacyPtr(self.0.cast(), PhantomData)
     }
 }
@@ -1944,7 +2063,11 @@ impl RacyUsize<'_> {
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
 #[inline]
-unsafe fn unordered_copy_nonoverlapping<T: Sealed>(src: NonNull<T>, dst: NonNull<T>, count: usize) {
+unsafe fn unordered_copy_nonoverlapping<T: RacyStorage>(
+    src: NonNull<T>,
+    dst: NonNull<T>,
+    count: usize,
+) {
     let count = count * size_of::<T>();
     unsafe { unordered_memcpy_down_unsynchronized(src.cast(), dst.cast(), count) };
 }
@@ -1977,7 +2100,7 @@ unsafe fn unordered_copy_nonoverlapping<T: Sealed>(src: NonNull<T>, dst: NonNull
 ///
 /// [valid]: https://doc.rust-lang.org/stable/core/ptr/#safety
 #[inline]
-unsafe fn unordered_copy<T: Sealed>(src: RacyPtr<T>, dst: RacyPtr<T>, count: usize) {
+unsafe fn unordered_copy<T: RacyStorage>(src: RacyPtr<T>, dst: RacyPtr<T>, count: usize) {
     let count = count * size_of::<T>();
     if dst.as_ptr() <= src.as_ptr() {
         unsafe { unordered_memcpy_down_unsynchronized(src.as_ptr(), dst.as_ptr(), count) };
