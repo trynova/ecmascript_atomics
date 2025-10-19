@@ -11,10 +11,10 @@ fn test_load() {
     let dst = Box::new(u64::MAX);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.get(0).unwrap();
 
     assert_eq!(dst_u8.load(Ordering::Unordered), u8::MAX);
 
@@ -41,10 +41,10 @@ fn test_store() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     dst_u8.store(u8::MAX, Ordering::Unordered);
     assert_eq!(dst_u8.load(Ordering::Unordered), u8::MAX);
@@ -79,10 +79,10 @@ fn test_exchange() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     assert_eq!(dst_u8.swap(u8::MAX), 0);
     assert_eq!(dst_u8.swap(0), u8::MAX);
@@ -105,10 +105,10 @@ fn test_compare_exchange() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     assert_eq!(dst_u8.compare_exchange(u8::MAX, u8::MAX), Err(0));
     assert_eq!(dst_u64.load(Ordering::Unordered), 0);
@@ -155,10 +155,10 @@ fn test_add() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     assert_eq!(dst_u8.fetch_add(u8::MAX), 0);
     assert_eq!(dst_u64.load(Ordering::Unordered), u8::MAX as u64);
@@ -189,10 +189,10 @@ fn test_and() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     assert_eq!(dst_u8.fetch_and(u8::MAX), 0);
     assert_eq!(dst_u64.load(Ordering::Unordered), 0);
@@ -252,10 +252,10 @@ fn test_or() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     assert_eq!(dst_u8.fetch_or(0x73), 0);
     assert_eq!(dst_u64.load(Ordering::Unordered), 0x73);
@@ -323,10 +323,10 @@ fn test_xor() {
     let dst = Box::new(0u64);
     let dst = unsafe { RacyMemory::enter_ptr(NonNull::from(Box::leak(dst))) };
     let dst_slice = dst.as_slice();
-    let dst_u8 = dst_slice.as_u8().unwrap();
-    let dst_u16 = dst_slice.as_u16().unwrap();
-    let dst_u32 = dst_slice.as_u32().unwrap();
-    let dst_u64 = dst_slice.as_u64().unwrap();
+    let dst_u8 = dst_slice.as_aligned::<u8>().unwrap();
+    let dst_u16 = dst_slice.as_aligned::<u16>().unwrap();
+    let dst_u32 = dst_slice.as_aligned::<u32>().unwrap();
+    let dst_u64 = dst_slice.as_aligned::<u64>().unwrap();
 
     assert_eq!(dst_u8.fetch_xor(0x73), 0);
     assert_eq!(dst_u64.load(Ordering::Unordered), 0x73);
@@ -424,17 +424,20 @@ fn test_copy() {
     let dst_u64 = dst_slice.align_to::<u64>().1;
 
     dst_u8.slice_to(1).copy_from_racy_slice(&src_u8.slice_to(1));
-    assert_eq!(dst.as_slice().load_u64().unwrap(), 0xFF);
+    assert_eq!(dst.as_slice().load_unaligned::<u64>().unwrap(), 0xFF);
     dst_u16
         .slice_to(1)
         .copy_from_racy_slice(&src_u16.slice_to(1));
-    assert_eq!(dst.as_slice().load_u64().unwrap(), 0xFFFF);
+    assert_eq!(dst.as_slice().load_unaligned::<u64>().unwrap(), 0xFFFF);
     dst_u32
         .slice_to(1)
         .copy_from_racy_slice(&src_u32.slice_to(1));
-    assert_eq!(dst.as_slice().load_u64().unwrap(), 0xFFFF_FFFF);
+    assert_eq!(dst.as_slice().load_unaligned::<u64>().unwrap(), 0xFFFF_FFFF);
     dst_u64
         .slice_to(1)
         .copy_from_racy_slice(&src_u64.slice_to(1));
-    assert_eq!(dst.as_slice().load_u64().unwrap(), 0xFFFF_FFFF_FFFF_FFFF);
+    assert_eq!(
+        dst.as_slice().load_unaligned::<u64>().unwrap(),
+        0xFFFF_FFFF_FFFF_FFFF
+    );
 }

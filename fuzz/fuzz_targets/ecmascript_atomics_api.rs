@@ -3,7 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #![no_main]
-use ecmascript_atomics::{Ordering, RacyMemory, RacySlice, RacyU8, RacyU16, RacyU32, RacyU64};
+use ecmascript_atomics::{Ordering, Racy, RacyMemory, RacySlice};
 use std::{
     hint::assert_unchecked,
     ops::{BitAnd, BitOr, BitXor},
@@ -147,7 +147,7 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let byte_offset = offset * size_of::<u8>();
                         let ecmascript_val = ecmascript_mem
                             .slice_from(byte_offset)
-                            .as_u8()
+                            .as_aligned::<u8>()
                             .unwrap()
                             .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
@@ -158,7 +158,7 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
 
                         let ecmascript_val = ecmascript_mem
                             .slice_from(byte_offset)
-                            .as_u16()
+                            .as_aligned::<u16>()
                             .unwrap()
                             .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
@@ -169,7 +169,7 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
 
                         let ecmascript_val = ecmascript_mem
                             .slice_from(byte_offset)
-                            .as_u32()
+                            .as_aligned::<u32>()
                             .unwrap()
                             .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
@@ -180,7 +180,7 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
 
                         let ecmascript_val = ecmascript_mem
                             .slice_from(byte_offset)
-                            .as_u64()
+                            .as_aligned::<u64>()
                             .unwrap()
                             .load((*order).into());
                         assert_eq!(rust_val, ecmascript_val)
@@ -198,8 +198,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let byte_offset = offset * size_of::<u8>();
                         rust_mem[byte_offset] = val;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u8>()
+                            .unwrap();
                         ecmascript_mem.store(val, (*order).into());
                         let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
@@ -212,8 +214,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         assert!(head.is_empty() && tail.is_empty());
                         body[0] = val;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u16>()
+                            .unwrap();
                         ecmascript_mem.store(val, (*order).into());
                         let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
@@ -226,8 +230,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         assert!(head.is_empty() && tail.is_empty());
                         body[0] = val;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u32>()
+                            .unwrap();
                         ecmascript_mem.store(val, (*order).into());
                         let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
@@ -240,8 +246,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         assert!(head.is_empty() && tail.is_empty());
                         body[0] = val;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u64>()
+                            .unwrap();
                         ecmascript_mem.store(val, (*order).into());
                         let ecmascript_val = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(ecmascript_val, val);
@@ -254,32 +262,40 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                     LoadKind::U8 => {
                         let rust_val = rust_mem[byte_offset];
 
-                        let ecmascript_val =
-                            ecmascript_mem.slice_from(byte_offset).load_u8().unwrap();
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .load_unaligned::<u8>()
+                            .unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U16 => {
                         let bytes = rust_mem[byte_offset..].first_chunk::<2>().unwrap();
                         let rust_val = u16::from_ne_bytes(*bytes);
 
-                        let ecmascript_val =
-                            ecmascript_mem.slice_from(byte_offset).load_u16().unwrap();
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .load_unaligned::<u16>()
+                            .unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U32 => {
                         let bytes = rust_mem[byte_offset..].first_chunk::<4>().unwrap();
                         let rust_val = u32::from_ne_bytes(*bytes);
 
-                        let ecmascript_val =
-                            ecmascript_mem.slice_from(byte_offset).load_u32().unwrap();
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .load_unaligned::<u32>()
+                            .unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                     LoadKind::U64 => {
                         let bytes = rust_mem[byte_offset..].first_chunk::<8>().unwrap();
                         let rust_val = u64::from_ne_bytes(*bytes);
 
-                        let ecmascript_val =
-                            ecmascript_mem.slice_from(byte_offset).load_u64().unwrap();
+                        let ecmascript_val = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .load_unaligned::<u64>()
+                            .unwrap();
                         assert_eq!(rust_val, ecmascript_val)
                     }
                 }
@@ -291,8 +307,8 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         rust_mem[byte_offset] = val;
 
                         let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
-                        ecmascript_mem.store_u8(val).unwrap();
-                        let ecmascript_val = ecmascript_mem.load_u8().unwrap();
+                        ecmascript_mem.store_unaligned::<u8>(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_unaligned::<u8>().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U16(val) => {
@@ -300,8 +316,8 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         *bytes = u16::to_ne_bytes(val);
 
                         let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
-                        ecmascript_mem.store_u16(val).unwrap();
-                        let ecmascript_val = ecmascript_mem.load_u16().unwrap();
+                        ecmascript_mem.store_unaligned::<u16>(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_unaligned::<u16>().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U32(val) => {
@@ -309,8 +325,8 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         *bytes = u32::to_ne_bytes(val);
 
                         let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
-                        ecmascript_mem.store_u32(val).unwrap();
-                        let ecmascript_val = ecmascript_mem.load_u32().unwrap();
+                        ecmascript_mem.store_unaligned::<u32>(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_unaligned::<u32>().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                     StoreKind::U64(val) => {
@@ -318,8 +334,8 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         *bytes = u64::to_ne_bytes(val);
 
                         let ecmascript_mem = ecmascript_mem.slice_from(byte_offset);
-                        ecmascript_mem.store_u64(val).unwrap();
-                        let ecmascript_val = ecmascript_mem.load_u64().unwrap();
+                        ecmascript_mem.store_unaligned::<u64>(val).unwrap();
+                        let ecmascript_val = ecmascript_mem.load_unaligned::<u64>().unwrap();
                         assert_eq!(ecmascript_val, val);
                     }
                 }
@@ -351,8 +367,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         }
                         let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u8>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
                         if let Err(current) = ecmascript_val {
                             ecmascript_mem.compare_exchange(current, val).unwrap();
@@ -389,8 +407,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         }
                         let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u16>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
                         if let Err(current) = ecmascript_val {
                             ecmascript_mem.compare_exchange(current, val).unwrap();
@@ -427,8 +447,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         }
                         let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u32>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
                         if let Err(current) = ecmascript_val {
                             ecmascript_mem.compare_exchange(current, val).unwrap();
@@ -465,8 +487,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         }
                         let final_rust_val = rust_mem.load(std::sync::atomic::Ordering::Relaxed);
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u64>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.compare_exchange(guess, val);
                         if let Err(current) = ecmascript_val {
                             ecmascript_mem.compare_exchange(current, val).unwrap();
@@ -485,8 +509,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let rust_val = core::mem::replace(get_t_mut::<u8>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u8>();
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u8>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
@@ -494,8 +520,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let rust_val = core::mem::replace(get_t_mut::<u16>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u16>();
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u16>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
@@ -503,8 +531,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let rust_val = core::mem::replace(get_t_mut::<u32>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u32>();
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u32>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
@@ -512,8 +542,10 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let rust_val = core::mem::replace(get_t_mut::<u64>(rust_mem, offset), val);
 
                         let byte_offset = offset * size_of::<u64>();
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u64>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_mem.swap(val);
                         assert_eq!(rust_val, ecmascript_val);
                     }
@@ -529,25 +561,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyU8::fetch_add
+                                Racy::<u8>::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyU8::fetch_and
+                                Racy::<u8>::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyU8::fetch_or
+                                Racy::<u8>::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyU8::fetch_xor
+                                Racy::<u8>::fetch_xor
                             }
                         };
                         rust_mem[byte_offset] = rust_result;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u8().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u8>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
                         let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
@@ -564,25 +598,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyU16::fetch_add
+                                Racy::<u16>::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyU16::fetch_and
+                                Racy::<u16>::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyU16::fetch_or
+                                Racy::<u16>::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyU16::fetch_xor
+                                Racy::<u16>::fetch_xor
                             }
                         };
                         body[0] = rust_result;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u16().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u16>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
                         let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
@@ -599,25 +635,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyU32::fetch_add
+                                Racy::<u32>::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyU32::fetch_and
+                                Racy::<u32>::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyU32::fetch_or
+                                Racy::<u32>::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyU32::fetch_xor
+                                Racy::<u32>::fetch_xor
                             }
                         };
                         body[0] = rust_result;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u32().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u32>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
                         let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
@@ -634,25 +672,27 @@ fn execute_ops(rust_mem: &mut [u8], ecmascript_mem: RacySlice<'_, u8>, ops: &[At
                         let ecmascript_op = match op {
                             FetchOp::Add => {
                                 rust_result = rust_val.wrapping_add(val);
-                                RacyU64::fetch_add
+                                Racy::<u64>::fetch_add
                             }
                             FetchOp::And => {
                                 rust_result = rust_val.bitand(val);
-                                RacyU64::fetch_and
+                                Racy::<u64>::fetch_and
                             }
                             FetchOp::Or => {
                                 rust_result = rust_val.bitor(val);
-                                RacyU64::fetch_or
+                                Racy::<u64>::fetch_or
                             }
                             FetchOp::Xor => {
                                 rust_result = rust_val.bitxor(val);
-                                RacyU64::fetch_xor
+                                Racy::<u64>::fetch_xor
                             }
                         };
                         body[0] = rust_result;
 
-                        let ecmascript_mem =
-                            ecmascript_mem.slice_from(byte_offset).as_u64().unwrap();
+                        let ecmascript_mem = ecmascript_mem
+                            .slice_from(byte_offset)
+                            .as_aligned::<u64>()
+                            .unwrap();
                         let ecmascript_val = ecmascript_op(&ecmascript_mem, val);
                         let ecmascript_result = ecmascript_mem.load(Ordering::SeqCst);
                         assert_eq!(rust_val, ecmascript_val);
