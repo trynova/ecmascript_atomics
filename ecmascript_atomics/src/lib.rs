@@ -458,6 +458,12 @@ impl<'a, T: RacyStorage> RacySlice<'a, T> {
         unsafe { RacySlice::from_raw_parts(self.as_ptr().cast(), self.byte_length()) }
     }
 
+    /// Creates an iterator from a value.
+    #[inline]
+    pub const fn iter(&self) -> RacyIter<'a, T> {
+        RacyIter::new(*self)
+    }
+
     /// Create a slice of racy atomic memory starting at the given offset.
     /// Returns an empty slice if the offset is beyond the end of this slice.
     #[inline]
@@ -715,6 +721,80 @@ impl<'a, T: RacyStorage> RacySlice<'a, T> {
             // SAFETY: Count checked to be valid for both.
             unsafe { unordered_copy_nonoverlapping(src, dst, count) };
         }
+    }
+}
+
+pub struct RacyIter<'a, T: RacyStorage> {
+    /// The pointer to the next element to return, or the past-the-end location
+    /// if the iterator is empty.
+    ptr: RacyPtr<T>,
+    /// The non-null pointer to the past-the-end element.
+    end: NonNull<()>,
+    _marker: PhantomData<Racy<'a, T>>,
+}
+
+// SAFETY: Racy atomics are safe to access from multiple threads.
+unsafe impl<T: RacyStorage> Send for RacyIter<'_, T> {}
+// SAFETY: Racy atomics are safe to access from multiple threads.
+unsafe impl<T: RacyStorage> Sync for RacyIter<'_, T> {}
+
+impl<'a, T: RacyStorage> RacyIter<'a, T> {
+    #[inline]
+    const fn new(slice: RacySlice<'a, T>) -> Self {
+        let len = slice.len();
+        let ptr: RacyPtr<T> = slice.as_ptr();
+        // SAFETY: Slice guarantees this doesn't overflow.
+        let end = unsafe { ptr.as_ptr().cast::<T>().add(len).cast::<()>() };
+        Self {
+            ptr,
+            end,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, T: RacyStorage> Iterator for RacyIter<'a, T> {
+    type Item = Racy<'a, T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let ptr = self.ptr;
+        let end = self.end;
+        unsafe {
+            if ptr.as_ptr() == end {
+                return None;
+            }
+            // SAFETY: since we're not at the end, per the check above, moving
+            // forward one keeps us inside the slice, and this is valid.
+            self.ptr = RacyPtr::from_ptr(ptr.as_ptr().cast::<T>().add(1).cast::<()>());
+            // SAFETY: Now that we know it wasn't empty and we've moved past
+            // the first one we can give out a racy value.
+            Some(Racy::from_ptr(ptr.as_ptr()))
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // SAFETY: end is always geq to ptr.
+        let exact = unsafe { self.end.offset_from_unsigned(self.ptr.as_ptr()) };
+        (exact, Some(exact))
+    }
+
+    #[inline]
+    fn count(self) -> usize {
+        // SAFETY: end is always geq to ptr.
+        unsafe { self.end.offset_from_unsigned(self.ptr.as_ptr()) }
+    }
+}
+
+impl<'a, T: RacyStorage> IntoIterator for RacySlice<'a, T> {
+    type Item = Racy<'a, T>;
+
+    type IntoIter = RacyIter<'a, T>;
+
+    #[inline(always)]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
