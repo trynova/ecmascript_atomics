@@ -465,3 +465,27 @@ fn test_iter() {
         assert_eq!(src.load(Ordering::Unordered), *dup);
     }
 }
+
+#[test]
+fn test_iter_rev() {
+    let mut src = Box::new([0u64; 16]);
+    for (i, src) in src.iter_mut().rev().enumerate() {
+        *src = i as u64;
+    }
+    let mut duplicate = src.clone();
+    let src = unsafe { RacyMemory::enter_slice(NonNull::from(Box::leak(src))) };
+    let src = src.as_slice();
+
+    for (i, (src, dup)) in src.iter().rev().zip(duplicate.iter_mut().rev()).enumerate() {
+        assert_eq!(i as u64, *dup);
+        assert_eq!(i as u64, src.load(Ordering::Unordered));
+        assert_eq!(src.load(Ordering::Unordered), *dup);
+        let output = u64::MAX - i as u64 * 258;
+        src.store(output, Ordering::Unordered);
+        *dup = output;
+    }
+
+    for (src, dup) in src.iter().rev().zip(duplicate.iter().rev()) {
+        assert_eq!(src.load(Ordering::Unordered), *dup);
+    }
+}

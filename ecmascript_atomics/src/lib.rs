@@ -787,6 +787,24 @@ impl<'a, T: RacyStorage> Iterator for RacyIter<'a, T> {
     }
 }
 
+impl<'a, T: RacyStorage> DoubleEndedIterator for RacyIter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let ptr = self.ptr;
+        let end = self.end;
+        unsafe {
+            if ptr.as_ptr() == end {
+                return None;
+            }
+            // SAFETY: since we're not at the end, per the check above, moving
+            // the end backward one keeps us inside the slice, and this is valid.
+            self.end = end.cast::<T>().sub(1).cast::<()>();
+            // SAFETY: Now that we know it wasn't empty and we've moved past
+            // the first one we can give out a racy value.
+            Some(Racy::from_ptr(self.end))
+        }
+    }
+}
+
 impl<'a, T: RacyStorage> IntoIterator for RacySlice<'a, T> {
     type Item = Racy<'a, T>;
 
