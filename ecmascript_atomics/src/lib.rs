@@ -805,6 +805,8 @@ impl<'a, T: RacyStorage> DoubleEndedIterator for RacyIter<'a, T> {
     }
 }
 
+impl<'a, T: RacyStorage> ExactSizeIterator for RacyIter<'a, T> {}
+
 impl<'a, T: RacyStorage> IntoIterator for RacySlice<'a, T> {
     type Item = Racy<'a, T>;
 
