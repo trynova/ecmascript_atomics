@@ -7,7 +7,6 @@
 
 #![no_std]
 
-//! # Racy atomic operations
 //!
 //! This library provides atomic operations that match the ECMAScript
 //! specification's memory model: this is effectively the same memory model as
@@ -79,8 +78,14 @@
 //!
 //! [GenerateAtomicOperations.py]: https://searchfox.org/firefox-main/source/js/src/jit/GenerateAtomicOperations.py
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 mod generated;
 mod unordered_copy;
+
+#[cfg(feature = "alloc")]
+use core::alloc::Layout;
 
 use core::{
     cell::UnsafeCell, hint::assert_unchecked, marker::PhantomData, mem::MaybeUninit, ptr::NonNull,
@@ -152,6 +157,110 @@ pub fn atomic_pause() {
     core::hint::spin_loop();
 }
 
+/// Owning handle to a slab of memory with the ECMAScript Atomics memory model.
+/// The slab is initially allocated using the global allocator for
+/// initialisation before being deallocated as Rust memory and reallocated as
+/// ECMAScript memory.
+///
+/// The memory can be freely shared to multiple threads for use and all APIs on
+/// the memory are guaranteed to not cause undefined behaviour even when data
+/// races or mixed-size atomics are used. Tearing may occur when using the copy
+/// APIs, meaning that usage should generally be careful and try to avoid both
+/// data races and mixed-size atomics.
+///
+/// # Soundness
+///
+/// The memory behind this handle is not and must not be read as Rust memory.
+/// Any Rust reads or writes into the memory are undefined behaviour.
+#[cfg(feature = "alloc")]
+pub struct RacyBox<T: RacyStorage> {
+    ptr: RacyPtr<T>,
+    len: usize,
+}
+
+#[cfg(feature = "alloc")]
+#[derive(Debug)]
+pub enum RacyBoxNewError {
+    SizeOverflow,
+    LayoutError,
+    AllocationFailure,
+}
+
+#[cfg(feature = "alloc")]
+impl<T: RacyStorage> RacyBox<T> {
+    /// Create a new racy heap allocation containing a single racy storage
+    /// value.
+    pub fn new(value: T) -> Result<Self, RacyBoxNewError> {
+        // SAFETY: T has non-zero size and a multiplier of 1 is always safe.
+        let layout = unsafe { Self::create_layout(1).unwrap_unchecked() };
+        // SAFETY: Layout has non-zero size.
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
+        let Some(ptr) = NonNull::new(ptr) else {
+            return Err(RacyBoxNewError::AllocationFailure);
+        };
+        let ptr = ptr.cast::<T>();
+        // SAFETY: data has been allocated successfully.
+        unsafe { ptr.write(value) };
+        // SAFETY: we are the exclusive referrer to ptr.
+        let ptr = unsafe { enter_racy_memory(ptr.cast::<T>()) };
+        Ok(Self { ptr, len: 1 })
+    }
+
+    /// Create a new racy heap allocation for a slice of racy storage. The
+    /// storage is initialised to all-zero.
+    pub fn with_capacity(capacity: usize) -> Result<Self, RacyBoxNewError> {
+        let layout = Self::create_layout(capacity)?;
+        // SAFETY: Layout has non-zero size.
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        let Some(ptr) = NonNull::new(ptr) else {
+            return Err(RacyBoxNewError::AllocationFailure);
+        };
+        // SAFETY: we are the exclusive referrer to ptr.
+        let ptr = unsafe { enter_racy_memory(ptr.cast::<T>()) };
+        Ok(Self { ptr, len: capacity })
+    }
+
+    /// Access the racy atomic memory using a shared slice.
+    #[inline(always)]
+    pub const fn as_slice(&self) -> RacySlice<'_, T> {
+        // SAFETY: type guarantees proper allocation.
+        unsafe { RacySlice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    /// Create a Layout for a RacyBox allocation of the given capacity.
+    #[inline]
+    const fn create_layout(capacity: usize) -> Result<Layout, RacyBoxNewError> {
+        const {
+            // SAFETY: Checking at compile time.
+            unsafe {
+                assert_unchecked(size_of::<T>() > 0);
+            };
+        }
+        let Some(size) = size_of::<T>().checked_mul(capacity) else {
+            return Err(RacyBoxNewError::SizeOverflow);
+        };
+        let Ok(layout) = Layout::from_size_align(size, align_of::<T>()) else {
+            return Err(RacyBoxNewError::LayoutError);
+        };
+        Ok(layout)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: RacyStorage> Drop for RacyBox<T> {
+    fn drop(&mut self) {
+        // SAFETY: type guarantees we're the only owner of self.ptr.
+        let ptr = unsafe { exit_racy_memory(self.ptr) };
+        // SAFETY: layout calculation has succeeded before so it must succeed
+        // now.
+        let layout = unsafe { Self::create_layout(self.len).unwrap_unchecked() };
+        // SAFETY: ptr is a block of memory currently allocated via the global
+        // allocator and layout is the same layout that was used to allocate
+        // the block of memory.
+        unsafe { alloc::alloc::dealloc(ptr.as_ptr().cast(), layout) };
+    }
+}
+
 /// Opaque handle to a slab of memory with the ECMAScript Atomics memory model.
 /// The slab must be created using the [`enter`] method and must be turned back
 /// into Rust memory using the [`exit`] method (note; this must be strictly
@@ -184,6 +293,7 @@ pub fn atomic_pause() {
 ///
 /// [`enter`]: crate::RacyMemory::enter
 /// [`exit`]: crate::RacyMemory::exit
+#[must_use]
 pub struct RacyMemory<T: RacyStorage> {
     ptr: RacyPtr<T>,
     len: usize,
@@ -199,7 +309,8 @@ impl<T: RacyStorage> RacyMemory<T> {
     ///
     /// # Safety
     ///
-    /// `ptr` must be a pointer to `len` bytes of readable and writable memory.
+    /// `ptr` must be an exclusive, owning pointer to `len` bytes of readable
+    /// and writable memory.
     ///
     /// # Soundness
     ///
@@ -210,20 +321,8 @@ impl<T: RacyStorage> RacyMemory<T> {
     #[inline]
     #[must_use]
     pub unsafe fn enter(ptr: NonNull<u8>, len: usize) -> RacyMemory<u8> {
-        let mut ptr = ptr.as_ptr();
-        // SAFETY: noop.
-        unsafe {
-            core::arch::asm!(
-                "/* Magic spell: let {} no longer be memory in Rust's eyes! */",
-                // Note: ptr is and out parameter so that the assembly block
-                // can conceptually deallocate the original ptr, removing its
-                // provenance, and return a new ptr with difference provenance.
-                inlateout(reg) ptr,
-                options(nostack, preserves_flags)
-            )
-        }
-        // SAFETY: Magic spell always returns non-null pointers.
-        let ptr = RacyPtr::from_ptr(unsafe { NonNull::new_unchecked(ptr.cast()) });
+        // SAFETY: function precondition.
+        let ptr = unsafe { enter_racy_memory(ptr) };
         RacyMemory::from_raw_parts(ptr, len)
     }
 
@@ -238,8 +337,11 @@ impl<T: RacyStorage> RacyMemory<T> {
     /// See [`enter`] for details.
     ///
     /// [`enter`]: crate::RacyMemory::enter
+    #[inline]
+    #[must_use]
     pub unsafe fn enter_ptr(ptr: NonNull<T>) -> Self {
-        let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>()) };
+        // SAFETY: function precondition.
+        let ptr = unsafe { enter_racy_memory(ptr) };
         Self::from_raw_parts(ptr.cast(), 1)
     }
 
@@ -247,16 +349,19 @@ impl<T: RacyStorage> RacyMemory<T> {
     ///
     /// # Safety
     ///
-    /// `ptr` must point to a valid, uniquely owned `T`.
+    /// `ptr` must point to a valid, uniquely owned `[T]`.
     ///
     /// # Soudness
     ///
     /// See [`enter`] for details.
     ///
     /// [`enter`]: crate::RacyMemory::enter
+    #[inline]
+    #[must_use]
     pub unsafe fn enter_slice(ptr: NonNull<[T]>) -> Self {
         let len = ptr.len();
-        let RacyMemory { ptr, .. } = unsafe { Self::enter(ptr.cast(), size_of::<T>() * len) };
+        // SAFETY: function precondition.
+        let ptr = unsafe { enter_racy_memory(ptr.cast::<T>()) };
         Self::from_raw_parts(ptr.cast(), len)
     }
 
@@ -277,20 +382,12 @@ impl<T: RacyStorage> RacyMemory<T> {
     #[inline]
     #[must_use]
     pub unsafe fn exit(self) -> (NonNull<T>, usize) {
-        let mut ptr = self.ptr.as_ptr().as_ptr();
-        // SAFETY: noop.
-        unsafe {
-            core::arch::asm!(
-                "/* Magic spell: let {} be memory in Rust's eyes! */",
-                // Note: ptr is and out parameter so that the assembly block
-                // can conceptually deallocate the ECMAScript memory, allocate
-                // new Rust memory, and return a pointer to it.
-                inlateout(reg) ptr,
-                options(nostack, preserves_flags)
-            )
-        }
-        // SAFETY: Magic spell always returns non-null pointers.
-        (unsafe { NonNull::new_unchecked(ptr.cast()) }, self.len)
+        // SAFETY: self.ptr is an owning pointer, all RacySlices to this memory
+        // created using safe APIs are invalidated by this call, and we must be
+        // the only referrer to this pointer if all safety preconditions have
+        // been followed.
+        let ptr = unsafe { exit_racy_memory(self.ptr) };
+        (ptr, self.len)
     }
 
     /// Access the racy atomic memory using a shared slice.
@@ -316,6 +413,57 @@ impl<T: RacyStorage> RacyMemory<T> {
     pub const fn from_raw_parts(ptr: RacyPtr<T>, len: usize) -> Self {
         Self { ptr, len }
     }
+}
+
+/// Deallocates an owned Rust memory and returns a pointer to a new ECMAScript
+/// memory allocation of the same size, containing the same data as the Rust
+/// memory did.
+///
+/// # Safety
+///
+/// The pointer must be an exclusive, owning pointer. No other referrers to the
+/// memory are allowed.
+unsafe fn enter_racy_memory<T: RacyStorage>(ptr: NonNull<T>) -> RacyPtr<T> {
+    let mut ptr = ptr.as_ptr();
+    // SAFETY: noop.
+    unsafe {
+        core::arch::asm!(
+            "/* Magic spell: let {} no longer be memory in Rust's eyes! */",
+            // Note: ptr is and out parameter so that the assembly block
+            // can conceptually deallocate the original ptr, removing its
+            // provenance, and return a new ptr with difference provenance.
+            inlateout(reg) ptr,
+            options(nostack, preserves_flags)
+        )
+    }
+    // SAFETY: Magic spell always returns non-null pointers.
+    RacyPtr::from_ptr(unsafe { NonNull::new_unchecked(ptr.cast()) })
+}
+
+/// Deallocates racy ECMAScript memory and returns a pointer to a new Rust
+/// memory allocation of the same size, containing the same data as the
+/// ECMAScript memory did.
+///
+/// # Safety
+///
+/// The pointer must be an owning pointer, deallocation must be strictly
+/// synchronised between threads, and the pointer must not have already been
+/// deallocated.
+unsafe fn exit_racy_memory<T: RacyStorage>(ptr: RacyPtr<T>) -> NonNull<T> {
+    let mut ptr = ptr.as_ptr().as_ptr();
+    // SAFETY: noop.
+    unsafe {
+        core::arch::asm!(
+            "/* Magic spell: let {} be memory in Rust's eyes! */",
+            // Note: ptr is and out parameter so that the assembly block
+            // can conceptually deallocate the ECMAScript memory, allocate
+            // new Rust memory, and return a pointer to it.
+            inlateout(reg) ptr,
+            options(nostack, preserves_flags)
+        )
+    }
+    // SAFETY: RacyPtr is guaranteed to be non-null.
+    unsafe { NonNull::new_unchecked(ptr) }.cast()
 }
 
 mod private {
@@ -885,6 +1033,14 @@ impl<T: RacyStorage> Racy<'_, T> {
 
     fn as_ptr(&self) -> NonNull<()> {
         self.0
+    }
+
+    /// Get the address of the racy atomic integer. The result is not a valid
+    /// pointer for reading or writing through under any circumstances. It is
+    /// only okay to use the address value itself. This is offered for Futex
+    /// implementation.
+    pub fn addr(&self) -> *const () {
+        self.0.as_ptr()
     }
 
     /// Stores a value into the racy atomic integer if the current value is the

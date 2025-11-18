@@ -5,6 +5,12 @@
 // Copyright of the originating code is owned by Firefox authors and Mozilla,
 // modifications by Aapo Alasuutari.
 
+//! This file is a Rust version of Firefox's Atomics internals code. In Firefox
+//! the code is generated using a Python script called
+//! "GenerateAtomicOperations.py". As this is sort of a manual run of said
+//! script with the output converted into Rust, the file is called
+//! `generated.rs`.
+//!
 //! See the comment in [./lib.rs] for details.
 
 use core::ptr::NonNull;
