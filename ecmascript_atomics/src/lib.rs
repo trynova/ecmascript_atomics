@@ -162,6 +162,11 @@ pub fn atomic_pause() {
 /// initialisation before being deallocated as Rust memory and reallocated as
 /// ECMAScript memory.
 ///
+/// When dropped, the handle exits the the ECMAScript memory model, reallocates
+/// the memory as Rust memory, and the deallocates it using the global
+/// allocator. Any [`RacyPtr`](RacyPtr)s derived from the allocation are
+/// invalidated on drop.
+///
 /// The memory can be freely shared to multiple threads for use and all APIs on
 /// the memory are guaranteed to not cause undefined behaviour even when data
 /// races or mixed-size atomics are used. Tearing may occur when using the copy
@@ -265,6 +270,9 @@ impl<T: RacyStorage> Drop for RacyBox<T> {
 /// The slab must be created using the [`enter`] method and must be turned back
 /// into Rust memory using the [`exit`] method (note; this must be strictly
 /// synchronised with all possible users of the racy atomic memory).
+///
+/// Any [`RacyPtr`](RacyPtr)s derived from the allocation are invalidated on
+/// [`exit`].
 ///
 /// The memory can be freely shared to multiple threads for use and all APIs on
 /// the memory are guaranteed to not cause undefined behaviour even when data
@@ -1013,9 +1021,23 @@ impl<T: RacyStorage> RacyPtr<T> {
     pub const fn cast<U: RacyStorage>(self) -> RacyPtr<U> {
         RacyPtr(self.0.cast(), PhantomData)
     }
+
+    /// Converts a racy pointer into a racy reference.
+    ///
+    /// # Safety
+    ///
+    /// When converting a racy pointer into a racy reference, there are several
+    /// rules that must be followed:
+    ///
+    /// * The pointer must be properly aligned.
+    /// * It must point to a valid value of type `T`.
+    /// * The backing racy memory must not have been exited.
+    pub const unsafe fn as_racy<'a>(self) -> Racy<'a, T> {
+        Racy::from_ptr(self.0)
+    }
 }
 
-/// An opaque pointer to memory implementing the ECMAScript atomic memory
+/// An opaque reference to memory implementing the ECMAScript atomic memory
 /// model.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -1027,11 +1049,11 @@ unsafe impl<T: RacyStorage> Send for Racy<'_, T> {}
 unsafe impl<T: RacyStorage> Sync for Racy<'_, T> {}
 
 impl<T: RacyStorage> Racy<'_, T> {
-    fn from_ptr(ptr: NonNull<()>) -> Self {
+    const fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr, PhantomData)
     }
 
-    fn as_ptr(&self) -> NonNull<()> {
+    const fn as_ptr(&self) -> NonNull<()> {
         self.0
     }
 
@@ -1039,7 +1061,7 @@ impl<T: RacyStorage> Racy<'_, T> {
     /// pointer for reading or writing through under any circumstances. It is
     /// only okay to use the address value itself. This is offered for Futex
     /// implementation.
-    pub fn addr(&self) -> *const () {
+    pub const fn addr(&self) -> *const () {
         self.0.as_ptr()
     }
 
